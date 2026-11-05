@@ -1,0 +1,25 @@
+{
+  "name": "gafgyt-349d2476-bench",
+  "version": 2,
+  "description": "Command timeline for Gafgyt 349d2476 (Snoopy.c build). The wire format was recovered by emulating the sample's own parser (analysis/simparse.py), not by reading disassembly: the bang must be followed by exactly one space, argv is space-separated, and a comma-joined line collapses to a single token that the bot rejects. Offsets are milliseconds from accept(), so every trace runs the same sequence.",
+  "handshake_at_ms": 0,
+  "commands": [
+    {
+      "at_ms": 60,
+      "label": "flood-stdhex",
+      "send": "! STDHEX {sink_ip} {sink_port} {flood_seconds}\n"
+    },
+    {
+      "at_ms": 1200,
+      "label": "flood-cnc",
+      "send": "! CNC {sink_ip} {sink_port} {flood_seconds}\n"
+    },
+    {
+      "at_ms": 2200,
+      "label": "stop",
+      "send": "! STOP\n"
+    }
+  ],
+  "close_at_ms": 2450,
+  "auto_replies": []
+}

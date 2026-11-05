@@ -1,0 +1,33 @@
+# Secrets
+**/mcp_token.txt
+.env
+.env.*
+*.pem
+id_rsa
+id_ed25519
+
+# Malware samples and analysis dumps
+samples/
+**/files/samples/
+*.exe
+*.elf
+*.ko
+infected.zip
+
+# EM captures and VM disks
+traces/
+*.npy
+*.npz
+*.h5
+*.qcow2
+*.img
+*.raw
+*.pcap
+
+# OS / editor
+.DS_Store
+Thumbs.db
+__pycache__/
+*.pyc
+.venv/
+emenv/

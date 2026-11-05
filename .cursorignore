@@ -1,0 +1,20 @@
+﻿# Do not index secrets, bulk traces, VM disks, or sample binaries
+**/mcp_token.txt
+.env
+.env.*
+samples/
+**/files/samples/
+traces/
+*.npy
+*.npz
+*.h5
+*.qcow2
+*.img
+*.raw
+*.pcap
+*.exe
+*.elf
+*.ko
+.venv/
+emenv/
+__pycache__/
