@@ -168,11 +168,32 @@ class Machine:
     def run_keysynth(self, argv, timeout):
         return run_cmd(argv, timeout=timeout)
 
-    def keysynth_leftover(self):
-        """keysynth destroys its uinput device, so a surviving process is a leak."""
-        rc, out, _ = run_cmd(["pgrep", "-f", "keysynth"])
-        pids = [p for p in out.split() if p.isdigit()]
-        return len(pids)
+    def keysynth_leftover(self, keysynth_path):
+        """Count surviving keysynth processes, matched by /proc/<pid>/exe.
+
+        `pgrep -f keysynth` cannot be used here: it matches the whole command
+        line, and this runner's own argv contains `--keysynth /path/keysynth`,
+        so it would report itself as a leak on every trace. Comparing the
+        resolved executable path avoids that entirely.
+        """
+        target = os.path.abspath(keysynth_path or "keysynth")
+        if not os.path.isdir("/proc"):
+            return 0
+        own = {os.getpid(), os.getppid()}
+        hits = 0
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            if pid in own:
+                continue
+            try:
+                exe = os.readlink(f"/proc/{pid}/exe").replace(" (deleted)", "")
+            except (FileNotFoundError, ProcessLookupError, PermissionError, OSError):
+                continue
+            if os.path.abspath(exe) == target:
+                hits += 1
+        return hits
 
     def sleep(self, seconds):
         time.sleep(seconds)
@@ -185,12 +206,15 @@ class FakeMachine(Machine):
     that grows only while the module is loaded and keysynth runs.
     """
 
-    def __init__(self, module_present=True, keysynth_rc=0, grow=True):
+    def __init__(self, module_present=True, keysynth_rc=0, grow=True,
+                 grow_bytes=512, emit_stdout=True):
         self.calls = []
         self.loaded = False
         self.module_present = module_present
         self.keysynth_rc = keysynth_rc
         self.grow = grow
+        self.grow_bytes = grow_bytes
+        self.emit_stdout = emit_stdout
         self.bytes = 0
         self.vermagic = "6.18.50+rpt-rpi-2712"
 
@@ -226,12 +250,14 @@ class FakeMachine(Machine):
     def run_keysynth(self, argv, timeout):
         self.calls.append(("keysynth", tuple(argv)))
         if self.keysynth_rc == 0 and self.grow and self.loaded:
-            self.bytes += 512
+            self.bytes += self.grow_bytes
         # Mirrors the real binary's stdout contract.
+        if not self.emit_stdout:
+            return self.keysynth_rc, "", ""
         n = 50 if self.keysynth_rc == 0 else 0
         return self.keysynth_rc, f"keysynth emitted={n} interval_ms=50 duration_ms=2500\n", ""
 
-    def keysynth_leftover(self):
+    def keysynth_leftover(self, keysynth_path):
         return 0
 
     def sleep(self, seconds):
@@ -278,16 +304,59 @@ def check_vermagic(machine, module):
     return False, "modinfo produced no vermagic line"
 
 
+def check_taint_baseline():
+    """Refuse to start if the kernel is already tainted by something else.
+
+    A module load taints the kernel (`G OE`), which is expected and recorded.
+    But if the kernel is *already* tainted before the first load, the taint is
+    from something else, and every manifest would attribute it to `kisni`. The
+    bitmask in /proc/sys/kernel/tainted is cumulative and cleared only by a
+    reboot, so a stale taint cannot be ignored.
+    """
+    path = "/proc/sys/kernel/tainted"
+    try:
+        with open(path, encoding="ascii") as fh:
+            mask = int(fh.read().strip() or "0")
+    except (OSError, ValueError):
+        return None, "cannot read /proc/sys/kernel/tainted"
+    if mask == 0:
+        return 0, "kernel is not tainted"
+    return mask, f"kernel already tainted (mask 0x{mask:x}); reboot before capture"
+
+
 def check_containment(machine):
-    """A default-deny OUTPUT policy is enough; kisni does no networking."""
+    """Require a default-deny OUTPUT policy, or DROP/REJECT rules that cover it.
+
+    `has_rules` alone is not enough: `-A OUTPUT -j ACCEPT` is a rule, and it
+    contains nothing. The Bashlite runner had the same shape of bug and fixed
+    it by parsing policy and rules properly; this is the minimum version of
+    that check. `kisni` performs no networking, so no port exception is needed
+    and none is allowed.
+    """
     rc, out, _ = run_cmd(["iptables", "-S", "OUTPUT"])
     if rc != 0:
-        return False, "cannot read iptables OUTPUT rules"
-    policy_drop = "-P OUTPUT DROP" in out
-    has_rules = any(line.startswith("-A OUTPUT") for line in out.splitlines())
-    if policy_drop or has_rules:
-        return True, "default-deny or explicit OUTPUT rules present"
-    return False, "OUTPUT is permissive; run Bashlite/isolation-on.sh or isolation-off.sh policy first"
+        return False, "cannot read iptables OUTPUT rules (needs root or sudo)"
+    policy = None
+    accepts, drops = [], []
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("-P OUTPUT"):
+            parts = line.split()
+            policy = parts[2] if len(parts) > 2 else None
+        elif line.startswith("-A OUTPUT"):
+            if "-j ACCEPT" in line:
+                accepts.append(line)
+            elif "-j DROP" in line or "-j REJECT" in line:
+                drops.append(line)
+    if policy == "DROP":
+        return True, f"policy DROP ({len(drops)} explicit drop rule(s))"
+    if accepts:
+        return False, (f"OUTPUT policy is {policy or 'unknown'} and there is an "
+                       f"open ACCEPT rule: {accepts[0]}")
+    if drops:
+        return True, f"no policy DROP, but {len(drops)} DROP/REJECT rule(s) present"
+    return False, ("OUTPUT is permissive; run Bashlite/isolation-on.sh first, "
+                   "then isolation-off.sh at the end")
 
 
 # -----------------------------------------------------------------------------
@@ -370,11 +439,10 @@ def run_trace(trace_index, args, machine, dry_run):
     record["trigger_edge_ns_on"] = on_ns
     if args.trigger == "gpio17":
         # GPIO toggling is done by the same helper the other runners use.
-        notes = []
         try:
             from gpiozero import OutputDevice  # type: ignore
             pin = OutputDevice(args.gpio_pin, active_high=True, initial_value=True)
-            notes.append(f"gpio{args.gpio_pin} asserted")
+            record["notes"].append(f"gpio{args.gpio_pin} asserted")
         except Exception as exc:  # noqa: BLE001
             pin = None
             record["status"] = "trigger-degraded"
@@ -394,9 +462,17 @@ def run_trace(trace_index, args, machine, dry_run):
         rc, out, err = machine.run_keysynth(argv, timeout=args.duration + 10)
         keysynth_rc = rc
         record["keystroke_count"] = _parse_emitted(out)
+        record["keystroke_count_source"] = "keysynth stdout"
         if rc != 0:
             record["status"] = "keysynth-failed"
             record["notes"].append(f"keysynth rc={rc}: {(err or out).strip()}")
+        elif record["keystroke_count"] == 0:
+            # A zero exit with no count means the stdout contract broke, not
+            # that nothing was typed. Treat it as a failed trace.
+            record["status"] = "keysynth-unreported"
+            record["notes"].append(
+                "keysynth exited 0 but printed no emitted= count; the trace "
+                "cannot be shown to contain typing")
     else:
         machine.sleep(args.duration)
 
@@ -413,7 +489,16 @@ def run_trace(trace_index, args, machine, dry_run):
     record["debugfs_bytes_after"] = after
     if before is not None and after is not None:
         record["debugfs_delta"] = after - before
-        if wants_module and wants_typing and keysynth_rc == 0 and after <= before:
+        # A negative delta is not a failure: the upstream buffer wraps at 16 KB
+        # rather than growing, so a long trace can land behind where it started.
+        # Records were still written; only a *zero* delta means nothing fired.
+        if record["debugfs_delta"] < 0:
+            record["notes"].append(
+                "debugfs delta is negative: the 16 KB buffer wrapped during the "
+                "trace, so this trace's byte delta is not comparable to an "
+                "unwrapped one")
+        if wants_module and wants_typing and keysynth_rc == 0 \
+                and record["debugfs_delta"] == 0:
             record["status"] = "no-activity"
             record["notes"].append(
                 "debugfs did not grow: the module did not record the keystrokes")
@@ -429,7 +514,7 @@ def run_trace(trace_index, args, machine, dry_run):
 
     record["lsmod_after"] = machine.lsmod_has()
     record["dmesg_taint"] = machine.dmesg_taint()
-    record["keysynth_leftover"] = machine.keysynth_leftover()
+    record["keysynth_leftover"] = machine.keysynth_leftover(args.keysynth)
 
     if record["lsmod_after"]:
         record["status"] = "module-leaked"
@@ -580,11 +665,19 @@ def self_test():
 
     # 13. a leftover keysynth process is reported
     class LeakyInjector(FakeMachine):
-        def keysynth_leftover(self):
+        def keysynth_leftover(self, keysynth_path):
             return 1
     rec = run_trace(0, base, LeakyInjector(), dry_run=False)
     expect(rec["status"] == "injector-leaked",
            f"leftover injector not flagged, status={rec['status']}")
+
+    # 13b. the leak check must not match on the runner's own command line.
+    # `pgrep -f keysynth` would, because this runner's argv contains
+    # `--keysynth /path/keysynth`; matching /proc/<pid>/exe must not.
+    m = FakeMachine()
+    run_trace(0, base, m, False)
+    expect(m.keysynth_leftover(base.keysynth) == 0,
+           "runner reports itself as a leaked injector")
 
     # 14. module leak is distinguished from a clean unload
     class LeakyModule(FakeMachine):
@@ -607,6 +700,67 @@ def self_test():
            "no pre-clean rmmod before insmod")
     settle = [c for c in m.calls if c[0] == "sleep" and c[1] == SETTLE_S]
     expect(len(settle) >= 1, "settle delay skipped")
+
+    # 16. a negative delta is a buffer wrap, not a failure: records were still
+    # written. Reporting it as `no-activity` would discard a valid trace.
+    class WrappingMachine(FakeMachine):
+        def __init__(self):
+            super().__init__()
+            self.bytes = 16000          # nearly full 16 KB buffer
+
+        def run_keysynth(self, argv, timeout):
+            self.calls.append(("keysynth", tuple(argv)))
+            self.bytes = (self.bytes + 2000) % 16384   # wraps past the end
+            return 0, "keysynth emitted=50 interval_ms=50 duration_ms=2500\n", ""
+    rec = run_trace(0, base, WrappingMachine(), dry_run=False)
+    expect(rec["debugfs_delta"] is not None and rec["debugfs_delta"] < 0,
+           f"wrap fixture produced delta {rec['debugfs_delta']}")
+    expect(rec["status"] == "ok", f"buffer wrap reported as {rec['status']}")
+    expect(any("wrapped" in n for n in rec["notes"]), "wrap not noted")
+
+    # 17. keysynth exits 0 but prints no count: the trace cannot be shown to
+    # contain typing, so it must not be recorded as clean.
+    rec = run_trace(0, base, FakeMachine(emit_stdout=False), dry_run=False)
+    expect(rec["status"] == "keysynth-unreported",
+           f"missing stdout contract gave status {rec['status']}")
+
+    # 18. a genuinely empty delta is still a failure.
+    rec = run_trace(0, base, FakeMachine(grow=False), dry_run=False)
+    expect(rec["status"] == "no-activity", f"zero delta gave {rec['status']}")
+
+    # 19. the taint baseline gate rejects an already-tainted kernel, and
+    # --allow-taint accepts it explicitly.
+    if os.path.isfile("/proc/sys/kernel/tainted"):
+        mask, detail = check_taint_baseline()
+        expect(mask is not None, f"taint unreadable on Linux: {detail}")
+    else:
+        mask, detail = check_taint_baseline()
+        expect(mask is None, "missing /proc/sys/kernel/tainted not reported")
+
+    # 20. containment must not accept an open ACCEPT rule as "contained".
+    class IptablesMachine(Machine):
+        def __init__(self, text):
+            self.text = text
+
+    def containment_of(text):
+        original = run_cmd
+        globals()["run_cmd"] = lambda argv, timeout=30: (0, text, "")
+        try:
+            return check_containment(IptablesMachine(text))
+        finally:
+            globals()["run_cmd"] = original
+
+    ok, detail = containment_of("-P OUTPUT DROP\n-A OUTPUT -o lo -j ACCEPT\n")
+    expect(ok, f"default-deny rejected: {detail}")
+
+    ok, detail = containment_of("-P OUTPUT ACCEPT\n-A OUTPUT -j ACCEPT\n")
+    expect(not ok, "permissive OUTPUT accepted")
+
+    ok, detail = containment_of("-P OUTPUT ACCEPT\n-A OUTPUT -d 8.8.8.8/32 -j DROP\n")
+    expect(ok, f"explicit DROP rejected: {detail}")
+
+    ok, detail = containment_of("-P OUTPUT ACCEPT\n")
+    expect(not ok, "empty rule set accepted")
 
     if failures:
         print(f"SELF-TEST FAILED ({len(failures)})")
@@ -685,6 +839,22 @@ def main(argv=None):
                 and not (args.keysynth and os.path.isfile(args.keysynth)):
             print("[FATAL] keysynth not found; pass --keysynth PATH", file=sys.stderr)
             return EXIT_USAGE
+        if args.mode in MODULE_MODES:
+            # A module load always taints the kernel. Refuse if something else
+            # already did: otherwise every manifest attributes a foreign taint
+            # to kisni, and the run is not a clean baseline.
+            mask, detail = check_taint_baseline()
+            if mask is None:
+                print(f"[FATAL] {detail}", file=sys.stderr)
+                return EXIT_MODULE
+            if mask != 0 and not args.allow_taint:
+                print(f"[FATAL] {detail}", file=sys.stderr)
+                print("        reboot the Pi before capture, or pass --allow-taint "
+                      "to record the pre-existing taint in every manifest.",
+                      file=sys.stderr)
+                return EXIT_MODULE
+            if mask != 0:
+                print(f"[WARN] {detail} (accepted via --allow-taint)")
 
     print(f"\n[Keysniffer] mode={args.mode} count={args.count} duration={args.duration}s "
           f"trigger={args.trigger} {'DRY RUN' if dry_run else 'EXECUTE'}")

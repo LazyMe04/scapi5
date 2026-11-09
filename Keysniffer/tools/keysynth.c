@@ -331,14 +331,9 @@ int main(int argc, char **argv)
     deadline = start;
 
     for (;;) {
-        struct timespec now;
         unsigned short code;
         int shift;
-
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        if ((now.tv_sec - start.tv_sec) * 1000L +
-            (now.tv_nsec - start.tv_nsec) / 1000000L >= total_ms)
-            break;
+        struct timespec next;
 
         if (!ascii_to_key(keys[idx], &code, &shift)) {
             idx = (idx + 1) % nkeys;
@@ -346,14 +341,27 @@ int main(int argc, char **argv)
         }
         idx = (idx + 1) % nkeys;
 
-        timespec_add_ms(&deadline, interval_ms);
+        /* Advance the schedule first, then decide. Checking the clock before
+         * advancing lets the final keystroke land after the window has closed,
+         * which would put an event past the trigger edge in the capture. */
+        next = deadline;
+        timespec_add_ms(&next, interval_ms);
+        if ((next.tv_sec - start.tv_sec) * 1000L +
+            (next.tv_nsec - start.tv_nsec) / 1000000L > total_ms)
+            break;
+        deadline = next;
+
         sleep_until(&deadline);
 
         if (emit_key(fd, code, shift, cfg.hold_ms) < 0) {
             /* A failed write means the device is gone, so retrying is pointless
-             * and continuing would report a count the kernel never received. */
+             * and continuing would report a count the kernel never received.
+             * The partial count is still printed: the runner needs to know how
+             * many events did reach the kernel before the device disappeared. */
             ioctl(fd, UI_DEV_DESTROY);
             close(fd);
+            printf("keysynth emitted=%ld interval_ms=%ld duration_ms=%ld failed=1\n",
+                   emitted, interval_ms, total_ms);
             return 5;
         }
         emitted++;

@@ -94,6 +94,20 @@ The plan predicted a scope-trigger gap. `pico-em-capture` has since grown the su
 on the scope class, and `resolve_trigger_source()` routing `EXT`/`AUX` through it in
 `capture.py`. No change was needed here.
 
+## Known limitation in the keyboard profile
+
+`goodware_runner.py` asserts the trigger *before* it starts the workload. For the
+`keyboard` profile that means the process-spawn and `uinput` device-creation cost
+(`UI_DEV_SETUP` + `UI_DEV_CREATE` + a 200 ms settle inside `keysynth`) lands inside the
+trigger window, while the other profiles start their work immediately. The first
+keystroke therefore arrives ~200 ms after the edge, not at it.
+
+That is acceptable for the `typing-only` control cell as long as `kisni-typing` has the
+same offset — both go through `keysynth`, so both carry it. It is **not** acceptable to
+compare the keyboard cells' first 200 ms against a crypto or idle trace. Trim the leading
+window in analysis, or start `keysynth` before asserting the trigger if a later revision
+needs an edge-aligned workload.
+
 ## Invariants
 
 Permitted, in this order only:

@@ -144,6 +144,19 @@ def analyse(traces):
             f"trace {t.get('trace_index')} ({t.get('mode')}): {t.get('status')}"
             + (" - " + "; ".join(t["notes"]) if t.get("notes") else ""))
 
+    # ---- 4b. wrapped traces ----
+    # A negative delta means the 16 KB debugfs buffer wrapped mid-trace. The
+    # trace is valid, but its byte delta is smaller than the number of records
+    # written, so it cannot go into a byte-delta distribution without a note.
+    wrapped = [t for t in traces
+               if isinstance(t.get("debugfs_delta"), int) and t["debugfs_delta"] < 0]
+    out["wrapped"] = len(wrapped)
+    if wrapped:
+        out["warnings"].append(
+            f"{len(wrapped)} trace(s) wrapped the 16 KB buffer; their byte deltas "
+            f"are lower bounds, not measurements. Use the keystroke count for "
+            f"those, or shorten the trace")
+
     # ---- 5. the signal itself ----
     # debugfs delta is what the rootkit recorded. A cell with the module loaded
     # and busy but a zero delta means the hook never fired.
@@ -154,7 +167,8 @@ def analyse(traces):
     out["debugfs_delta"] = {m: sorted(v) for m, v in deltas.items()}
 
     idle_delta = deltas.get("kisni-idle", [])
-    if idle_delta and any(d != 0 for d in idle_delta):
+    # A negative delta is a wrap, not activity; it is reported separately in 4b.
+    if idle_delta and any(d > 0 for d in idle_delta):
         out["warnings"].append(
             "kisni-idle recorded keystrokes; something other than the injector "
             "is typing, or a previous trace's buffer was not cleared")
@@ -301,6 +315,20 @@ def self_test():
     expect(r["measured"] == 3, f"measured was {r['measured']}, expected 3")
     expect(not any("no measurement" in p for p in r["problems"]),
            "mixed dataset rejected")
+
+    # 13. a wrapped trace is valid, warned about, and not counted as activity
+    r = analyse([trace("kisni-typing", delta=-800, idx=0),
+                 trace("typing-only", delta=512, idx=1)])
+    expect(r["wrapped"] == 1, f"wrapped count was {r.get('wrapped')}")
+    expect(not any("recorded nothing" in p for p in r["problems"]),
+           "a wrap was treated as no activity")
+    expect(any("wrapped the 16 KB buffer" in x for x in r["warnings"]),
+           "wrap not warned about")
+
+    # 14. a negative delta in the idle cell is a wrap, not failed containment
+    r = analyse([trace("kisni-idle", delta=-800)])
+    expect(not any("idle recorded keystrokes" in x for x in r["warnings"]),
+           "idle wrap misreported as keystrokes")
 
     if failures:
         print(f"SELF-TEST FAILED ({len(failures)} of {checks[0]})")

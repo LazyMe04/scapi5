@@ -188,17 +188,32 @@ def check_build_tools():
 # Phase 5 — load/unload rehearsal prerequisites
 # -----------------------------------------------------------------------------
 def check_debugfs():
-    rc, out, _ = run(["mount"])
-    if rc == 0 and "debugfs" not in out:
-        return FAIL, "debugfs is not mounted (mount -t debugfs none /sys/kernel/debug)"
     base = "/sys/kernel/debug"
     if not os.path.isdir(base):
         return FAIL, f"{base} does not exist"
+    rc, out, err = run(["mount"])
+    if rc != 0:
+        return FAIL, f"cannot list mounts ({err or 'mount failed'})"
     # The exact path must be absent now: a stale entry means a module is
     # already loaded, which would invalidate the first trace's byte delta.
+    if not os.path.ismount(base):
+        return FAIL, f"{base} is not a mount point (mount -t debugfs none {base})"
     if os.path.exists("/sys/kernel/debug/kisni"):
         return FAIL, "debugfs:/kisni already present - a module is loaded; rmmod first"
     return OK, f"{base} mounted, no stale kisni entry"
+
+
+def check_taint():
+    """A module load taints the kernel; a pre-existing taint is a bad baseline."""
+    try:
+        with open("/proc/sys/kernel/tainted", encoding="ascii") as fh:
+            mask = int(fh.read().strip() or "0")
+    except (OSError, ValueError) as exc:
+        return FAIL, f"cannot read /proc/sys/kernel/tainted: {exc}"
+    if mask == 0:
+        return OK, "kernel is not tainted"
+    return WARN, (f"kernel already tainted (mask 0x{mask:x}); reboot before "
+                  f"capture, or every manifest will attribute a foreign taint to kisni")
 
 
 def check_uinput():
@@ -248,6 +263,7 @@ def gather(image=None):
     add("P3", "module_symvers", check_symvers)
     add("P3", "module_config", check_module_config)
     add("P5", "debugfs", check_debugfs)
+    add("P5", "taint_baseline", check_taint)
     add("P5", "uinput", check_uinput)
     add("P5", "kisni_absent", check_kisni_absent)
     return results
