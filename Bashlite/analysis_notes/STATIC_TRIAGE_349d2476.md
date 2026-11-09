@@ -41,7 +41,7 @@ the emulator exists.
 | Toolchain | uClibc (symbols `__uClibc_main`, `__GI_*`), compiled by GCC **4.2.1** (one object by GCC 3.3.2) |
 | Source file name | `snoopy.c` in `.symtab` STT_FILE |
 
-### Acceptance against BASHLITE_32BIT_PLAN.md §2
+### Acceptance against `Bashlite/docs/BASHLITE_32BIT_PLAN.md` §2
 
 - [x] machine is ARM, 32-bit, EABI5-era ARMv4T code — machine `EM_ARM`, class ELF32, `Tag_CPU_arch = v4T`
 - [x] **statically linked** — no interpreter, so no `ld-linux-armhf.so.3` dependency

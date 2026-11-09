@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Generate the Vietnamese operator guide for the Pi 5 Bashlite run.
 
-Build:  uv run --no-project --with python-docx python -I bench/docgen/build_pi5_guide.py
-Output: PI5_Bashlite_HuongDan.docx in the repo root.
+Build:  uv run --no-project --with python-docx python -I Bashlite/docgen/build_pi5_guide.py
+Output: PI5_Bashlite_HuongDan.docx in Bashlite/docs/.
 """
+import os
 import re
 from docx import Document
 from docx.shared import Pt, Cm, RGBColor
@@ -12,7 +13,8 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
-OUT = r"C:\Users\Minh_Trinh\Downloads\bench\PI5_Bashlite_HuongDan.docx"
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+OUT = os.path.join(_ROOT, "Bashlite", "docs", "PI5_Bashlite_HuongDan.docx")
 
 doc = Document()
 
@@ -508,9 +510,9 @@ python3 -m venv /home/victim/work/tools/venv
 
 h2("3.9 Chép công cụ và sample lên Pi")
 p("Công cụ chép trước (đi vào `tools/`, không bao giờ nằm cạnh sample):")
-code("""# chạy trên laptop, trong thư mục bench/
-scp bench/bashlite_runner.py bench/isolation-on.sh bench/isolation-off.sh \\
-    bench/preflight.sh emlab@192.168.7.2:/home/victim/work/tools/""")
+code("""# chạy trên laptop, trong thư mục gốc của repo/
+scp Bashlite/runner/bashlite_runner.py Bashlite/isolation-on.sh isolation-off.sh \\
+    preflight.sh emlab@192.168.7.2:/home/victim/work/tools/""")
 p("Sample chép dưới dạng **zip đã mã hoá**, không phải file ELF:")
 code("""sha256sum 349d24768645262ce4bc0d75cdbd4b5b16c20c64a423b966a8215ed70740b777.zip
 scp 349d2476*.zip emlab@192.168.7.2:/home/victim/work/staging/""")
@@ -590,10 +592,9 @@ p("Trên Pi, sau khi đã bật isolation:")
 code("""sudo bash /home/victim/work/tools/isolation-on.sh \\
      --admin 192.168.7.1 --c2 192.168.7.1 --c2-port 999 --owner-user victim""")
 p("Trên laptop, mở một cửa sổ riêng cho C2 (để nguyên trong suốt quá trình chạy):")
-code("""cd bench
-python3 c2_server.py --mode serve --bind 192.168.7.1 --port 999 \\
-        --script c2_script.json --sink-port 9999 --flood-seconds 3 \\
-        --log runs/run01.jsonl --summary runs/run01.json""")
+code("""python3 Bashlite/c2/c2_server.py --mode serve --bind 192.168.7.1 --port 999 \\
+        --script Bashlite/c2/c2_script.json --sink-port 9999 --flood-seconds 3 \\
+        --log Bashlite/runs/run01.jsonl --summary Bashlite/runs/run01.json""")
 
 h2("5.2 Bước 1 — containment dry-run (không chạy malware)")
 p("Mục đích: kiểm tra runner nhìn thấy ruleset là kín, **trước khi** có malware trên máy.")
@@ -638,8 +639,8 @@ h2("5.4 Bước 3 — chế độ quan sát")
 p("**Chế độ quan sát** (`--mode observe`) là C2 giả chỉ *nhận và ghi log*, không bao giờ gửi lệnh. "
   "Mục đích là xem sample tự nó làm gì trước khi ta ép nó làm bất cứ điều gì.")
 p("Khởi động trên laptop:")
-code("""python3 c2_server.py --mode observe --bind 192.168.7.1 --port 999 \\
-        --log runs/discover-$(date +%H%M).jsonl""")
+code("""python3 Bashlite/c2/c2_server.py --mode observe --bind 192.168.7.1 --port 999 \\
+        --log Bashlite/runs/discover-$(date +%H%M).jsonl""")
 p("Trên Pi chạy sample đúng **một** lần:")
 code("""sudo python3 /home/victim/work/tools/bashlite_runner.py \\
   --sample /home/victim/work/shmsamples/bashlite.bin \\
@@ -668,7 +669,7 @@ code("""sudo python3 /home/victim/work/tools/bashlite_runner.py \\
   --count 3 --duration 2.5 --cooldown 0.5 \\
   --manifest /home/victim/work/manifests/run01.json""")
 p("Kiểm tra C2 đã gửi đúng thứ mình nghĩ:")
-code("""python3 c2_server.py --print-script""")
+code("""python3 Bashlite/c2/c2_server.py --print-script""")
 
 h2("5.6 Bước 5 — chứng minh cửa sổ không rảnh")
 p("Đây là bước quyết định trace có dùng được hay không. C2 phải đang chạy.")
@@ -818,8 +819,8 @@ sudo passwd -l victim
 sudo install -d -o victim -g victim -m 0750 /home/victim/work/{tools,staging,shmsamples,manifests}
 sudo bash /home/victim/work/tools/preflight.sh""")
 h3("Trên laptop — chép file")
-code("""scp bench/bashlite_runner.py bench/isolation-on.sh bench/isolation-off.sh \\
-    bench/preflight.sh emlab@192.168.7.2:/home/victim/work/tools/
+code("""scp Bashlite/runner/bashlite_runner.py Bashlite/isolation-on.sh isolation-off.sh \\
+    preflight.sh emlab@192.168.7.2:/home/victim/work/tools/
 scp 349d2476*.zip emlab@192.168.7.2:/home/victim/work/staging/""")
 h3("Trên Pi — giải mã vào RAM")
 code("""findmnt -no OPTIONS /dev/shm

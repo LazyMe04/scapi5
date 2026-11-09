@@ -32,6 +32,8 @@
 
 set -euo pipefail
 
+# Rollback lives at the repo root: isolation-off.sh (one level up from this script).
+
 ADMIN_HOST="${ADMIN_HOST:-192.168.7.1}"
 C2_HOST="${C2_HOST:-192.168.7.1}"
 # 349d2476…b777 hardcodes 181.214.147.11:999, so 999 must be the default C2 port.
@@ -247,7 +249,7 @@ fi
 
 if [[ "$FAILED" == 1 ]]; then
     echo
-    echo "VERIFICATION FAILED. Do not run a sample. Run: sudo bash isolation-off.sh" >&2
+    echo "VERIFICATION FAILED. Do not run a sample. Run: sudo bash isolation-off.sh     # from the repo root" >&2
     exit 2
 fi
 
@@ -255,7 +257,7 @@ if [[ "$PERSIST" == 1 ]]; then
     head_ "persisting"
     if command -v netfilter-persistent >/dev/null; then
         netfilter-persistent save
-        say "saved (remember: this survives reboot; run isolation-off.sh afterwards)"
+        say "saved (remember: this survives reboot; run isolation-off.sh afterwards)     # from the repo root"
     else
         say "netfilter-persistent not installed; rules are session-only"
     fi
@@ -273,5 +275,5 @@ During the run, watch the counters:
   sudo iptables -L OUTPUT -n -v           # DROPs = attempts on anything else
 
 When finished:
-  sudo bash isolation-off.sh
+  sudo bash isolation-off.sh     # lives at the repo root
 EOF

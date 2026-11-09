@@ -30,7 +30,7 @@ python3 goodware_runner.py --task crypto --count 10 --duration 1.5 --gpio-pin 17
 python3 goodware_runner.py --task all --dry-run   # Windows rehearsal only; no EM
 ```
 
-`--dry-run` is not a dataset. Workloads: `idle`, `crypto`, `compress`, `math`, `network`. Default duration in the runner is 1.5 s; the paper used 2.5 s at 2 MHz (500,000 points). If replicating the paper window, set `--duration 2.5` and match the scope record length. Do not mix durations in one labeled set.
+`--dry-run` is not a dataset. Workloads: `idle`, `crypto`, `compress`, `math`, `network`. Default duration in the runner is 1.5 s; the paper used 2.5 s at 2 MHz, which is 5,000,000 points (the paper's text says 500,000, but 500,000 at 2 MHz is 0.25 s). If replicating the paper window, set `--duration 2.5` and match the scope record length. Do not mix durations in one labeled set.
 
 ## Paper acquisition (replicate unless hardware forces a change)
 

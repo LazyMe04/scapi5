@@ -42,7 +42,7 @@ exists to expose.
 Wire format note for the bundled sample
 ---------------------------------------
 The default script speaks the protocol of Gafgyt 349d2476, recovered by
-emulating that sample's own parser (analysis/simparse.py). It is `!` + exactly
+emulating that sample's own parser (Bashlite/analysis/simparse.py). It is `!` + exactly
 one space + COMMAND + space-separated arguments. The classic `.tcp` / `.udp`
 vocabulary and the IRC-style NICK/PING handshake of other Bashlite builds are
 not used here. If you swap in a different sample, re-run observe first and
@@ -73,7 +73,6 @@ import argparse
 import json
 import os
 import socket
-import struct
 import sys
 import threading
 import time
@@ -84,7 +83,7 @@ SERVER_VERSION = "1.0.0"
 DEFAULT_ALLOW_CIDR = "192.168.7.0/24"
 
 # Wire format of this specific sample, recovered by emulating its own parser
-# (analysis/simparse.py) rather than by reading disassembly:
+# (Bashlite/analysis/simparse.py) rather than by reading disassembly:
 #
 #   ! CMD arg arg arg          -> argv[0] = "CMD", dispatches
 #   !CMD arg arg arg          -> the first token is eaten, argc too small, ignored

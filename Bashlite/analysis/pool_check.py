@@ -3,13 +3,20 @@
 Read-only: the zip is decrypted in memory, nothing is written as an ELF.
 Usage: python -I pool_check.py <zip> infected 0x12d60 0x12d48 ...
 """
-import sys
+import os
 import struct
+import sys
 
-sys.path.insert(0, r'C:\Users\Minh_Trinh\Downloads\bench\.pylib')
-sys.path.insert(0, r'C:\Users\Minh_Trinh\Downloads\bench\analysis')
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_LIB = _HERE
+while not os.path.isdir(os.path.join(_LIB, '.pylib')):
+    _parent = os.path.dirname(_LIB)
+    if _parent == _LIB:
+        break
+    _LIB = _parent
+sys.path.insert(0, os.path.join(_LIB, '.pylib'))
+sys.path.insert(0, _HERE)
 
-import pyzipper
 import elfdump
 
 
@@ -24,6 +31,8 @@ def cstr(data, addr, secs):
 
 
 def main():
+    if len(sys.argv) < 4:
+        sys.exit(__doc__.strip())
     _name, data = elfdump.load(sys.argv[1], sys.argv[2])
     secs = elfdump.sections(data)
     text = secs['.text']

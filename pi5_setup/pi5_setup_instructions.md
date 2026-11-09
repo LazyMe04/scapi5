@@ -25,8 +25,10 @@ Facts that constrain the setup:
   with a **32-bit** OS and **32-bit ARM** malware. This project uses a **Pi 5**, which is 64-bit.
   That difference is the reason for Section 4.
 - Two of the paper's malware classes, `keysniffer` and `maK_it`, are **Linux kernel modules**.
-  Kernel modules must match kernel version, kernel config and CPU architecture exactly. They
-  will not load on a Pi 5 under any circumstance. Do not attempt them.
+  Kernel modules must match kernel version, kernel config and CPU architecture exactly, so the
+  paper's prebuilt `.ko` files will not load on a Pi 5 under any circumstance. Do not attempt to
+  load them. `keysniffer` may instead be rebuilt from its published GPL-2.0 source for this
+  kernel — see §4.5 item 2 and `Keysniffer/analysis_notes/KEYSNIFFER_PHASE0_APPROVAL.md`.
 - The paper deliberately kept default background services, no overclocking, and no clock tuning.
   This setup follows that. Section 6 has one deliberate exception, which is explained there.
 
@@ -253,13 +255,26 @@ This is a workable outcome, not a failure. Do not attempt to change the kernel c
    **Do not cross-compile.** Rebuilding replaces the author's toolchain, optimisation level, and
    hardcoded constants; the result is no longer in-the-wild malware, and its SHA-256 no longer
    matches any recorded manifest. Select a **naturally aarch64** sample instead. This is settled
-   in `BASHLITE_32BIT_PLAN.md` §1 and in the lab invariants.
-2. **Drop `keysniffer` and `maK_it` entirely.** They are kernel modules and cannot work.
-3. Reduce the class count from six to four.
+   in `Bashlite/docs/BASHLITE_32BIT_PLAN.md` §1 and in the lab invariants.
+   *Scope note:* this rule governs **in-the-wild userland binaries**, whose identity is a hash of
+   one author-built artifact. It does not govern **published open-source modules**, whose identity
+   is a pinned source revision — item 2 below is the only such case, and it carries its own
+   provenance and deviation requirements.
+2. **Drop `maK_it`.** It is a kernel module whose source is not published by the same route,
+   and it adds hidden-module, packet-sniffer and reverse-shell components. Do not attempt it.
+   `keysniffer` is **not** dropped: it is open source (GPL-2.0), its published source still builds
+   against current mainline interfaces, and `Keysniffer/KEYSNIFFER_PLAN.md` §0 records a verified
+   written approval to rebuild it for this kernel. The resulting trace is a same-source
+   re-instantiation on new hardware, not a replication of the paper's sample, and must be
+   reported that way.
+3. Reduce the class count from six to five, with the rootkit class represented by `keysniffer`
+   alone.
 4. Record the change in the thesis as a documented deviation, with the reason: the paper used a
-   32-bit device, this project uses a 64-bit device which cannot load 32-bit kernel modules.
+   32-bit device and a 4.19 kernel, this project uses a 64-bit device, and the prebuilt
+   foreign-arch module cannot be loaded. The rebuilt module describes this kernel's code, not
+   the paper's.
 
-A four-class problem on hardware that actually exists is worth more than a six-class problem
+A five-class problem on hardware that actually exists is worth more than a six-class problem
 that does not.
 
 ### 4.6 Note on cross-compiling 32-bit samples
@@ -267,8 +282,12 @@ that does not.
 If the test passes, 32-bit ARM samples are usable directly and no cross-compilation is needed
 anywhere in this project. Rebuilding a sample for aarch64 is **not** an option: it replaces the
 author's toolchain, optimisation level, and hardcoded constants, and the result stops being
-in-the-wild malware. `BASHLITE_32BIT_PLAN.md` §1 settles this; a rebuild also invalidates the
-SHA-256 recorded in every manifest.
+in-the-wild malware. `Bashlite/docs/BASHLITE_32BIT_PLAN.md` §1 settles this; a rebuild also
+invalidates the SHA-256 recorded in every manifest.
+
+This applies to in-the-wild userland binaries. It does not apply to published open-source kernel
+modules, whose identity is a pinned source revision rather than one author-built artifact; the
+only approved case is `keysniffer` (§4.5 item 2).
 
 ---
 
@@ -507,7 +526,9 @@ reported will be assumed to have failed later.
   is sound: malware runs alongside real services, and a classifier trained against a stripped
   system will not generalise. Section 6.1 is the only exception, and it exists because radio
   transmission is not background service load, it is unbounded external stimulus.
-- Do not attempt `keysniffer` or `maK_it`. They are kernel modules and cannot work on this device.
+- Do not attempt to load `maK_it`. It remains excluded. `keysniffer` may be loaded only as a
+  locally built module for exactly `uname -r`, after Phase 0 approval is recorded in
+  `Keysniffer/analysis_notes/KEYSNIFFER_PHASE0_APPROVAL.md`, and never with `insmod --force`.
 - Do not run any malware before Section 7 is verified.
 - Do not move or re-cable the Pi after measurement begins without restarting the capture log.
 - Do not collect traces before the throttle check in Section 3.2 passes. A throttling CPU

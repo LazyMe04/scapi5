@@ -12,9 +12,10 @@ Features:
 
 import argparse
 import hashlib
-import io
 import os
+import re
 import socket
+import subprocess
 import sys
 import time
 import zlib
@@ -43,24 +44,23 @@ class HardwareTrigger:
                     if os.path.exists(self.act_led_trigger_path):
                         with open(self.act_led_trigger_path, "r") as f:
                             content = f.read()
-                            import re
-                            match = re.search(r'\[(.*?)\]', content)
-                            if match:
-                                self.original_trigger = match.group(1)
-                            else:
-                                self.original_trigger = "mmc0"
+                        match = re.search(r'\[(.*?)\]', content)
+                        if match:
+                            self.original_trigger = match.group(1)
+                        else:
+                            self.original_trigger = "mmc0"
 
                         with open(self.act_led_trigger_path, "w") as f:
                             f.write("none\n")
                         print(f"[HardwareTrigger] Initialized ACT LED ({self.act_led_brightness_path}). Kernel trigger disabled (was '{self.original_trigger}').")
                     else:
-                        print(f"[HardwareTrigger] Warning: ACT LED path not found. Falling back to DRY-RUN mode.")
+                        print("[HardwareTrigger] Warning: ACT LED path not found. Falling back to DRY-RUN mode.")
                         self.dry_run = True
                 except Exception as e:
                     print(f"[HardwareTrigger] Warning: Could not initialize ACT LED ({e}). Falling back to DRY-RUN mode.")
                     self.dry_run = True
             else:
-                print(f"[HardwareTrigger] Initialized ACT LED in DRY-RUN mode.")
+                print("[HardwareTrigger] Initialized ACT LED in DRY-RUN mode.")
         else:
             if not self.dry_run:
                 try:
@@ -210,6 +210,61 @@ def workload_network(duration=1.5):
     return packets_sent
 
 
+def workload_keyboard(duration=1.5):
+    """
+    Synthetic keystroke workload for the console (VT) keyboard path.
+
+    Needed because `kisni` hooks `register_keyboard_notifier()`: only events that
+    reach `kbd_keycode()` in drivers/tty/vt/keyboard.c are logged, and SSH typing
+    never enters that path. An SSH session therefore produces an idle trace that
+    looks perfectly valid. This profile drives `keysynth` (uinput) so the workload
+    is identical whether or not the module is loaded — which is what makes the
+    `typing-only` cell a usable control.
+
+    Configuration by environment, so the CLI stays compatible with the other
+    profiles:
+        EMLAB_KEYSYNTH          path to the keysynth binary (default: keysynth in PATH)
+        EMLAB_KEYSYNTH_RATE     keys per second (default: 20, fixed across the campaign)
+        EMLAB_KEYSYNTH_KEYFILE  keystroke sequence file, hashed into the manifest
+
+    Fails loudly if the injector is missing. A silent fallback to `sleep()` would
+    turn every "keyboard" trace into an idle trace without saying so.
+    """
+    keysynth = os.environ.get("EMLAB_KEYSYNTH", "keysynth")
+    rate = os.environ.get("EMLAB_KEYSYNTH_RATE", "20")
+    keyfile = os.environ.get("EMLAB_KEYSYNTH_KEYFILE")
+
+    argv = [keysynth, "--rate", str(rate), "--duration", f"{duration:.3f}", "--quiet"]
+    if keyfile:
+        argv += ["--keyfile", keyfile]
+
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True,
+                              timeout=duration + 10, check=False)
+    except FileNotFoundError:
+        raise RuntimeError(
+            f"keysynth not found ({keysynth!r}). Set EMLAB_KEYSYNTH to the built "
+            f"binary, or build Keysniffer/tools/keysynth.c first. Refusing to run "
+            f"an idle trace in place of a keyboard trace."
+        ) from None
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"keysynth did not finish within {duration + 10:.0f}s") from None
+    except OSError as exc:
+        # Covers "not executable", "wrong architecture", and the WinError 193
+        # class of failure: the injector exists but cannot be run.
+        raise RuntimeError(f"keysynth could not be executed ({keysynth!r}): {exc}") from None
+
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"keysynth exited {proc.returncode}: {(proc.stderr or proc.stdout).strip()}"
+        )
+
+    match = re.search(r"emitted=(\d+)", proc.stdout or "")
+    if not match:
+        raise RuntimeError(f"keysynth produced no emitted count: {proc.stdout!r}")
+    return f"{match.group(1)} keystrokes"
+
+
 # Registry of available tasks
 WORKLOADS = {
     "idle": workload_idle,
@@ -217,7 +272,16 @@ WORKLOADS = {
     "compress": workload_compress,
     "math": workload_math,
     "network": workload_network,
+    "keyboard": workload_keyboard,
 }
+
+# `--task all` deliberately excludes `keyboard`. The Bashlite and Gonnacry
+# campaigns were captured with the five profiles above; adding a sixth would
+# change the workload set and break comparability with those datasets. The
+# keyboard profile also needs an external binary, so it would turn an unattended
+# `--task all` into an abort on any host without keysynth. It is requested
+# explicitly, per Keysniffer trace.
+ALL_TASKS = ["idle", "crypto", "compress", "math", "network"]
 
 
 # -----------------------------------------------------------------------------
@@ -229,14 +293,14 @@ def run_benchmark(task_name, count, duration, trigger, cooldown=0.3):
         print(f"Error: Unknown task '{task_name}'. Available: {list(WORKLOADS.keys())}")
         sys.exit(1)
 
-    print(f"\n=======================================================")
+    print("\n=======================================================")
     print(f" Goodware Acquisition Runner: {task_name.upper()}")
     print(f" Target Runs   : {count}")
     print(f" Trace Duration: {duration:.2f} seconds")
     trigger_desc = f"ACT LED ({trigger.act_led_brightness_path})" if trigger.use_act_led else f"Pin {trigger.pin}"
     print(f" GPIO Trigger  : {trigger_desc} (Dry-run: {trigger.dry_run})")
     print(f" Cooldown      : {cooldown:.2f} seconds")
-    print(f"=======================================================\n")
+    print("=======================================================\n")
 
     # Initial settling time to stabilize CPU clock
     time.sleep(1.0)
@@ -249,7 +313,16 @@ def run_benchmark(task_name, count, duration, trigger, cooldown=0.3):
 
         # 2. Execute Workload
         exec_start = time.perf_counter()
-        result = workload_fn(duration=duration)
+        try:
+            result = workload_fn(duration=duration)
+        except RuntimeError as exc:
+            # A workload that cannot run is a failed trace, not a reason to
+            # abandon the campaign: stop here and report, so the remaining
+            # traces are not silently recorded as idle.
+            trigger.off()
+            print(f" FAILED\n[Error] {exc}")
+            print(f"\n[Aborted] Trace {run_idx} failed; no further traces run.\n")
+            return False
         exec_end = time.perf_counter()
 
         # 3. Stop Trigger (GPIO LOW)
@@ -262,6 +335,7 @@ def run_benchmark(task_name, count, duration, trigger, cooldown=0.3):
         time.sleep(cooldown)
 
     print(f"\n[Completed] Successfully executed {count} traces of '{task_name}'.\n")
+    return True
 
 
 def main():
@@ -311,18 +385,23 @@ def main():
 
     trigger = HardwareTrigger(pin=args.gpio_pin, use_act_led=args.use_act_led, dry_run=args.dry_run)
 
+    ok = True
     try:
         if args.task == "all":
-            for task in WORKLOADS.keys():
-                run_benchmark(task, args.count, args.duration, trigger, args.cooldown)
+            for task in ALL_TASKS:
+                if not run_benchmark(task, args.count, args.duration, trigger, args.cooldown):
+                    ok = False
+                    break
         else:
-            run_benchmark(args.task, args.count, args.duration, trigger, args.cooldown)
+            ok = run_benchmark(args.task, args.count, args.duration, trigger, args.cooldown)
     except KeyboardInterrupt:
         print("\n[Interrupted] Execution aborted by user.")
+        ok = False
     finally:
         trigger.off()
         trigger.cleanup()
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

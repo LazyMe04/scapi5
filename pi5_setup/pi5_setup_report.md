@@ -47,6 +47,14 @@ The aarch64 kernel has `CONFIG_COMPAT=y` and `CONFIG_COMPAT_BINFMT_ELF=y` enable
 * Real-world 32-bit ARM malware samples (e.g. Mirai, Bashlite, Gonnacry) can be executed natively without emulation or recompilation.
 * Kernel modules (`keysniffer`, `maK_it`) remain excluded as specified in Section 0.
 
+> **Amendment 2026-11-09.** The exclusion is narrowed. `maK_it` stays excluded in all forms.
+> `keysniffer` (`kisni`) may be used **only** as an out-of-tree build of its published GPL-2.0
+> source for exactly `uname -r`, under the written approval recorded in
+> `Keysniffer/analysis_notes/KEYSNIFFER_PHASE0_APPROVAL.md`. The prebuilt foreign-arch `.ko`
+> still cannot be loaded and must not be forced. A trace from the rebuilt module describes this
+> kernel's code, not the paper's 4.19 code, and must be reported as a same-source
+> re-instantiation rather than a replication. See `pi5_setup_instructions.md` §4.5.
+
 ---
 
 ## 2. Section 3 Verification Table

@@ -3,9 +3,21 @@
 The zip is decrypted in memory; nothing is ever written to disk as an ELF.
 Usage: python -I elfdump.py <zip> <password> [--func 0xADDR] [--len N]
 """
-import sys, struct, re, json
+import json
+import os
+import re
+import struct
+import sys
 
-sys.path.insert(0, r'C:\Users\Minh_Trinh\Downloads\bench\.pylib')
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_LIB = _HERE
+while not os.path.isdir(os.path.join(_LIB, '.pylib')):
+    _parent = os.path.dirname(_LIB)
+    if _parent == _LIB:
+        break
+    _LIB = _parent
+sys.path.insert(0, os.path.join(_LIB, '.pylib'))
+sys.path.insert(0, _HERE)
 import pyzipper
 import capstone
 
@@ -83,6 +95,8 @@ def pool(data, secs, start, end, strs):
 
 
 def main():
+    if len(sys.argv) < 3:
+        sys.exit(__doc__.strip())
     zip_path, pw = sys.argv[1], sys.argv[2]
     name, data = load(zip_path, pw)
     secs = sections(data)

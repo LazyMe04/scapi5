@@ -12,10 +12,18 @@ that processCmd() would receive.
 Read-only: the zip is decrypted in memory; no ELF is written to disk.
 Usage: python -I simparse.py <zip> <password> ["!STDHEX ..."]
 """
+import os
 import sys
 
-sys.path.insert(0, r'C:\Users\Minh_Trinh\Downloads\bench\.pylib')
-sys.path.insert(0, r'C:\Users\Minh_Trinh\Downloads\bench\analysis')
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_LIB = _HERE
+while not os.path.isdir(os.path.join(_LIB, '.pylib')):
+    _parent = os.path.dirname(_LIB)
+    if _parent == _LIB:
+        break
+    _LIB = _parent
+sys.path.insert(0, os.path.join(_LIB, '.pylib'))
+sys.path.insert(0, _HERE)
 
 import elfdump
 
@@ -277,6 +285,8 @@ def run_line(text_blob, line_bytes, entry=0x1299C, trace=False):
 
 
 def main():
+    if len(sys.argv) < 3:
+        sys.exit(__doc__.strip())
     zip_path, pw = sys.argv[1], sys.argv[2]
     _name, data = elfdump.load(zip_path, pw)
     secs = elfdump.sections(data)

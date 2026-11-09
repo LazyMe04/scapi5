@@ -17,7 +17,11 @@ English only in all outputs.
 
 - Goodware and malware traces must share the same OS image, boot state, and running services. Do not strip services to "reduce noise".
 - Do not overclock, underclock, or set `arm_freq` / `force_turbo`. Abort capture if `vcgencmd get_throttled` is not `0x0`.
-- 32-bit ARM userland ELFs run on this Pi 5 (`CONFIG_COMPAT`). Kernel modules `keysniffer` and `maK_it` cannot load; do not attempt them. Document that as a paper deviation.
+- 32-bit ARM userland ELFs run on this Pi 5 (`CONFIG_COMPAT`).
+- A prebuilt kernel module may not be loaded unless it was built for exactly `uname -r` on this device. The paper's `kisni-4.19.57-v7+.ko` and `maK_it` packages are foreign-arch and cannot load; do not attempt them.
+- An out-of-tree build of **published GPL source** for the running kernel is permitted in this lab, only for modules whose rebuild is approved in writing. Currently that means `keysniffer` (`kisni`) only, per `Keysniffer/analysis_notes/KEYSNIFFER_PHASE0_APPROVAL.md`. The trace from a rebuilt module is a same-source re-instantiation, not a replication of the paper's sample, and must be recorded as such.
+- `maK_it` remains excluded in all forms: its source is not published by the same route, and it adds hidden-module, packet-sniffer and reverse-shell components outside this argument.
+- Never use `insmod --force`, and never disable module signature enforcement.
 
 ## Safety
 

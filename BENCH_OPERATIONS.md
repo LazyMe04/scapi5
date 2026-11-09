@@ -61,6 +61,15 @@ including SSH keys.
 **Never run a trace while the CPU is throttling.** A throttled CPU changes clock frequency
 mid-capture. Traces look valid and are not. Preflight checks this.
 
+**Never let a kernel module panic the device unattended.** A locally built module is the only
+kernel-module workload permitted, and only for architecturally compatible published GPL source
+whose rebuild is approved in writing (`Keysniffer/analysis_notes/KEYSNIFFER_PHASE0_APPROVAL.md`).
+Before loading one: image the SD card, confirm a recovery path (HDMI + USB keyboard, or UART
+console, or a re-flashable card), and complete the load/unload rehearsal in
+`Keysniffer/KEYSNIFFER_PLAN.md` Phase 5. A panic ends the session and can corrupt the card.
+Never use `insmod --force`; if signature enforcement rejects the module, report the blocker and
+stop. `maK_it` is excluded in all forms.
+
 **Never point a sample at the public internet.** Use a synthetic command server on the bench
 link only.
 
@@ -181,12 +190,20 @@ Reference parameters from the published methodology, for when the model is confi
 |---|---|
 | Sample rate | 2 MHz |
 | Capture window | 2.5 seconds |
-| Points per trace | 500,000 |
-| Size per trace | approximately 8 MB |
+| Points per trace | 5,000,000 |
+| Raw size per trace | 10 MB int16 (40 MB as float64 .npy) |
 | Probe placement | 45 degrees above the processor |
 | STFT window | 8192 |
 | STFT overlap | 4096 |
 | Feature selection | normalised inter-class variance, 20 bands |
+
+The paper (section 6.2.1) states "500 000 points to get a 2.5s recording with a
+sampling rate of 2MHz", which is arithmetically inconsistent: 500,000 points at
+2 MHz is 0.25 s. The 2.5 s window is the quantity the rest of this document and
+every runner workload are built around, so it is treated as authoritative and
+the point count is derived from it. The paper's "about 8 MB per trace" matches
+neither figure and is not used. See `pico-em-capture/README.md` for the full
+reconciliation.
 
 The 2.5 second window was selected empirically, partly because idle periods in malware sleep
 cycles would otherwise yield empty windows. If a workload finishes faster than the window, the

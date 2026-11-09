@@ -77,13 +77,13 @@ contributes its own signature; packed variants are a separate study.
 
 | File | Role |
 |---|---|
-| `bench/bashlite_runner.py` | time-bounded executor with trigger, containment gate, privilege drop, leftover sweep, manifest |
-| `bench/isolation-on.sh` | default-deny egress, single C2 exception, per-port DROP counters, optional redirect |
-| `bench/isolation-off.sh` | rollback to permissive networking |
-| `bench/c2_server.py` | spoofed C2: observe mode, scripted serve mode, flood sinks, JSONL evidence log |
-| `bench/c2_script.json` | editable command timeline; offsets from `accept()` |
-| `bench/BASHLITE_VM_TEST.md` | rehearsal runbook for the ARM64 guest |
-| `bench/BASHLITE_PI_DIRECT.md` | runbook for running straight on the Pi 5 — no REMnux, no VM rehearsal |
+| `Bashlite/runner/bashlite_runner.py` | time-bounded executor with trigger, containment gate, privilege drop, leftover sweep, manifest |
+| `Bashlite/isolation-on.sh` | default-deny egress, single C2 exception, per-port DROP counters, optional redirect |
+| `isolation-off.sh` | rollback to permissive networking |
+| `Bashlite/c2/c2_server.py` | spoofed C2: observe mode, scripted serve mode, flood sinks, JSONL evidence log |
+| `Bashlite/c2/c2_script.json` | editable command timeline; offsets from `accept()` |
+| `Bashlite/docs/BASHLITE_VM_TEST.md` | rehearsal runbook for the ARM64 guest |
+| `Bashlite/docs/BASHLITE_PI_DIRECT.md` | runbook for running straight on the Pi 5 — no REMnux, no VM rehearsal |
 
 ---
 
@@ -134,9 +134,9 @@ ip link show wlan0                    # DOWN
 ### 1.2 Kernel enforcement
 
 ```bash
-sudo bash bench/isolation-on.sh --admin 192.168.7.1 --c2 192.168.7.1 --c2-port 999 \
+sudo bash Bashlite/isolation-on.sh --admin 192.168.7.1 --c2 192.168.7.1 --c2-port 999 \
                                --owner-user victim --dry-run   # inspect first
-sudo bash bench/isolation-on.sh --admin 192.168.7.1 --c2 192.168.7.1 --c2-port 999 \
+sudo bash Bashlite/isolation-on.sh --admin 192.168.7.1 --c2 192.168.7.1 --c2-port 999 \
                                --owner-user victim
 ```
 
@@ -166,7 +166,7 @@ runner's own gate classifies the ruleset as `full`.
 ## Phase 2 — Static triage (REMnux, nothing executes)
 
 REMnux is the default host for this phase, not a requirement; the phase only needs
-a Linux host that is not the operator's daily machine. `bench/BASHLITE_PI_DIRECT.md`
+a Linux host that is not the operator's daily machine. `Bashlite/docs/BASHLITE_PI_DIRECT.md`
 does the same checks on the Pi itself, where the sample has to end up anyway.
 
 ```bash
@@ -181,8 +181,8 @@ vocabulary. **Do not assume the IRC-style vocabulary** (`NICK`, `USER`, `PING`,
 `PONG`, `PRIVMSG`) or the classic `.tcp` / `.udp` / `.telnet` tokens: the accepted
 sample uses neither. Its parser wants `! COMMAND arg arg arg` on a single line,
 with the bang followed by exactly one space (see
-`bench/analysis_notes/STATIC_TRIAGE_349d2476.md`). Reading the strings is not enough
-to get this right — `analysis/simparse.py` executes the sample's own parser and
+`Bashlite/analysis_notes/STATIC_TRIAGE_349d2476.md`). Reading the strings is not enough
+to get this right — `Bashlite/analysis/simparse.py` executes the sample's own parser and
 prints the `argc`/`argv` it would receive.
 
 Write `static_notes.md` with: C2 endpoint, port, protocol, candidate command set,
@@ -198,8 +198,8 @@ the SHA-256 and the memory layout, and weakens the "ran the real sample" claim.
 ### 3.1 Observe
 
 ```bash
-python3 bench/c2_server.py --mode observe --bind 192.168.7.1 --port 999 \
-        --log runs/discover-$(date +%H%M).jsonl
+python3 Bashlite/c2/c2_server.py --mode observe --bind 192.168.7.1 --port 999 \
+        --log Bashlite/runs/discover-$(date +%H%M).jsonl
 ```
 
 Run the sample once (Phase 5, with `--count 1`). Read the log: what does the bot send
@@ -208,7 +208,7 @@ seeing this.
 
 ### 3.2 Serve a fixed timeline
 
-Edit `bench/c2_script.json` so each command is something the sample actually accepts
+Edit `Bashlite/c2/c2_script.json` so each command is something the sample actually accepts
 (per Phase 3.1). Keep offsets measured from `accept()`:
 
 | Offset | Intent |
@@ -220,9 +220,9 @@ Edit `bench/c2_script.json` so each command is something the sample actually acc
 | 2450 ms | server closes; the runner's window is 2500 ms |
 
 ```bash
-python3 bench/c2_server.py --mode serve --bind 192.168.7.1 --port 999 \
-        --script bench/c2_script.json --sink-port 9999 --flood-seconds 3 \
-        --log runs/c2-$(date +%H%M).jsonl --summary runs/c2-summary.json
+python3 Bashlite/c2/c2_server.py --mode serve --bind 192.168.7.1 --port 999 \
+        --script Bashlite/c2/c2_script.json --sink-port 9999 --flood-seconds 3 \
+        --log Bashlite/runs/c2-$(date +%H%M).jsonl --summary Bashlite/runs/c2-summary.json
 ```
 
 `--flood-seconds` is the duration handed to the bot, not the capture window. Keep it
@@ -234,8 +234,8 @@ just above 2.5 s: `SendSTDHEX` loops for that many seconds *before* it reaches
 Two independent checks:
 
 ```bash
-python3 bench/c2_server.py --print-script              # timeline is what you think
-python3 bench/c2_server.py --self-test --bind 192.168.7.1 --port 999
+python3 Bashlite/c2/c2_server.py --print-script              # timeline is what you think
+python3 Bashlite/c2/c2_server.py --self-test --bind 192.168.7.1 --port 999
 ```
 
 The self-test connects like a dumb bot and reports what the server sends. Sink
@@ -248,11 +248,11 @@ counters (`--summary`) must move when a flood command is issued.
 
 ## Phase 4 — Rehearsal in the VM (no scope needed)
 
-Optional if you take the direct route: `bench/BASHLITE_PI_DIRECT.md` replaces this
+Optional if you take the direct route: `Bashlite/docs/BASHLITE_PI_DIRECT.md` replaces this
 phase with an on-Pi ladder that runs the sample natively instead of through
 `qemu-arm-static`.
 
-Follow `bench/BASHLITE_VM_TEST.md`, with the C2 running.
+Follow `Bashlite/docs/BASHLITE_VM_TEST.md`, with the C2 running.
 
 1. Revert the guest to `cloudinit-done`, boot, tunnel SSH.
 2. Inside the guest apply default-deny plus an exception to the C2 reachable at
@@ -288,8 +288,8 @@ identical in the wrong way. Record whichever choice you make.
 
 ```bash
 # laptop
-python3 bench/c2_server.py --mode serve --bind 192.168.7.1 --port 999 \
-        --script bench/c2_script.json --log runs/run01.jsonl --summary runs/run01.json
+python3 Bashlite/c2/c2_server.py --mode serve --bind 192.168.7.1 --port 999 \
+        --script Bashlite/c2/c2_script.json --log Bashlite/runs/run01.jsonl --summary Bashlite/runs/run01.json
 
 # Pi, as root so the trigger works, with the sample dropped to victim
 sudo python3 /tmp/bashlite_runner.py \
@@ -330,7 +330,8 @@ Fix that before collecting a single trace; an idle dataset cannot be repaired la
 
 Only flags change, not logic:
 
-- `--duration 2.5` with 2 MHz sampling and 500 000 points per trace
+- `--duration 2.5` with 2 MHz sampling; that is 5 000 000 points per trace, not 500 000
+  (500 000 points at 2 MHz is only 0.25 s)
 - align the trigger on one short capture first; a misaligned trigger cannot be fixed
 - `vcgencmd get_throttled` = `0x0` before and after every session
 - do not move the Pi or the probe between traces of one dataset
@@ -341,7 +342,7 @@ Only flags change, not logic:
 
 ```bash
 rm -f /home/victim/work/samples/bashlite.bin
-sudo bash bench/isolation-off.sh
+sudo bash isolation-off.sh
 # restore the SD image if this device holds anything you care about
 ```
 

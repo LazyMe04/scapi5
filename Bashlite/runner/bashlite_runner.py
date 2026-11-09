@@ -1014,7 +1014,7 @@ def run(args):
             print("[Containment] FATAL: containment is not verifiably active "
                   f"(level={level}). Refusing to execute live malware.")
             print(describe_containment(containment))
-            print("  Fix the guest/host firewall (see bench/BASHLITE_VM_TEST.md Phase B), "
+            print("  Fix the guest/host firewall (see Bashlite/docs/BASHLITE_VM_TEST.md Phase B), "
                   "or pass --skip-containment-check only if you verified it yourself.")
             errors.append(f"containment level {level}")
             manifest["finished_utc"] = utc_now()

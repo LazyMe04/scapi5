@@ -15,7 +15,7 @@ GPIO 17 enabled is what produces traces on the Pi 5.
 | VM | run-2 ARM64 QEMU guest (`~/arm64-vm/` on REMnux), Ubuntu 24.04, kernel 6.8, snapshot `cloudinit-done` |
 | Sample | **not yet obtained.** Phase C covers acquisition and verification |
 | Hardware trigger | `--software-trigger` (no GPIO in the guest) |
-| Runner | `bench/bashlite_runner.py` v2.0.0 |
+| Runner | `Bashlite/runner/bashlite_runner.py` v2.0.0 |
 | Live malware execution | **not approved** until E1 and E2 pass |
 
 The runner refuses `--execute` when: the host is not Linux, the caller is root (unless
@@ -124,7 +124,7 @@ Rollback: `rm -rf ~/samples/bashlite.bin`, then snapshot revert.
 ## Phase D — Install the runner
 
 ```bash
-scp -P 2232 "C:/Users/Minh_Trinh/Downloads/bench/bench/bashlite_runner.py" \
+scp -P 2232 "C:/Users/Minh_Trinh/Downloads/bench/Bashlite/runner/bashlite_runner.py" \
     ubuntu@127.0.0.1:~/work/
 ssh -p 2232 ubuntu@127.0.0.1 "python3 ~/work/bashlite_runner.py --help"
 ```

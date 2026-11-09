@@ -1,7 +1,7 @@
 {
   "name": "gafgyt-349d2476-bench",
   "version": 2,
-  "description": "Command timeline for Gafgyt 349d2476 (Snoopy.c build). The wire format was recovered by emulating the sample's own parser (analysis/simparse.py), not by reading disassembly: the bang must be followed by exactly one space, argv is space-separated, and a comma-joined line collapses to a single token that the bot rejects. Offsets are milliseconds from accept(), so every trace runs the same sequence.",
+  "description": "Command timeline for Gafgyt 349d2476 (Snoopy.c build). The wire format was recovered by emulating the sample's own parser (Bashlite/analysis/simparse.py), not by reading disassembly: the bang must be followed by exactly one space, argv is space-separated, and a comma-joined line collapses to a single token that the bot rejects. Offsets are milliseconds from accept(), so every trace runs the same sequence.",
   "handshake_at_ms": 0,
   "commands": [
     {

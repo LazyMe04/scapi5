@@ -50,7 +50,7 @@ uname -a; cat /etc/os-release
 vcgencmd get_throttled                  # must be 0x0
 grep -E 'arm_freq|overclock|force_turbo' /boot/firmware/config.txt   # must be empty
 id victim
-sudo bash bench/preflight.sh            # run it now, while the internet still works
+sudo bash preflight.sh            # run it now, while the internet still works
 ```
 
 **Why preflight now and not later:** its NETWORK section treats a `dpt:53` rule as
@@ -153,9 +153,9 @@ the sample:
 
 ```bash
 # laptop
-scp bench/bashlite_runner.py bench/isolation-on.sh bench/isolation-off.sh \
-    bench/preflight.sh victim@192.168.7.2:/home/victim/work/tools/
-scp analysis/elfdump.py analysis/simparse.py analysis/pool_check.py \
+scp Bashlite/runner/bashlite_runner.py Bashlite/isolation-on.sh isolation-off.sh \
+    preflight.sh victim@192.168.7.2:/home/victim/work/tools/
+scp Bashlite/analysis/elfdump.py Bashlite/analysis/simparse.py Bashlite/analysis/pool_check.py \
     victim@192.168.7.2:/home/victim/work/tools/
 ```
 
@@ -318,8 +318,8 @@ means the ruleset has a hole the runner can see; do not use
 Start the C2 on the laptop. Observe mode logs without sending anything:
 
 ```bash
-python3 bench/c2_server.py --mode observe --bind 192.168.7.1 --port 999 \
-        --log runs/discover-$(date +%H%M).jsonl
+python3 Bashlite/c2/c2_server.py --mode observe --bind 192.168.7.1 --port 999 \
+        --log Bashlite/runs/discover-$(date +%H%M).jsonl
 ```
 
 **E1 — mimic.** Proves the whole path (DNAT, privilege drop, marker sweep) without
@@ -366,9 +366,9 @@ sudo python3 /home/victim/work/tools/bashlite_runner.py \
 **E3 — real sample, scripted.** Restart the C2 in serve mode first:
 
 ```bash
-python3 bench/c2_server.py --mode serve --bind 192.168.7.1 --port 999 \
-        --script bench/c2_script.json --sink-port 9999 --flood-seconds 3 \
-        --log runs/run01.jsonl --summary runs/run01.json
+python3 Bashlite/c2/c2_server.py --mode serve --bind 192.168.7.1 --port 999 \
+        --script Bashlite/c2/c2_script.json --sink-port 9999 --flood-seconds 3 \
+        --log Bashlite/runs/run01.jsonl --summary Bashlite/runs/run01.json
 ```
 
 ```bash
@@ -379,7 +379,7 @@ sudo python3 /home/victim/work/tools/bashlite_runner.py \
   --count 3 --duration 2.5 --cooldown 0.5 \
   --manifest /home/victim/work/manifests/run01.json
 
-python3 bench/c2_server.py --print-script     # the timeline you think you sent
+python3 Bashlite/c2/c2_server.py --print-script     # the timeline you think you sent
 ```
 
 **Gate for E3 (all must hold):**
@@ -416,7 +416,7 @@ it sits still. Do not proceed to capture on a near-zero trace.
 
 ## Phase P7 — Capture
 
-Unchanged from the main plan, Phase 6: `--duration 2.5`, 2 MHz, 500 000 points,
+Unchanged from the main plan, Phase 6: `--duration 2.5`, 2 MHz, 5 000 000 points,
 `vcgencmd get_throttled` = `0x0` before and after every session, and never move
 the Pi or the probe inside one dataset.
 
