@@ -157,6 +157,22 @@ edge and the end of the capture, not wall-clock time.
 `goodware_runner.py` exists with profiles including `idle`, `crypto`, `compress`, `math` and
 `network`. It drives GPIO 17 as the capture trigger.
 
+It writes an append-only JSONL manifest, and that manifest is not optional: without it a
+benign trace has no record of which workload produced it or when, so it cannot be joined to
+its capture and cannot enter a dataset. One manifest per cell; `--task all` writes one per
+task.
+
+```bash
+python3 goodware_runner.py --task crypto --count 3000 --duration 2.5 \
+    --capture-duration 2.5 --run-dir runs/crypto-01
+```
+
+`--duration` must be at least the scope's capture window, or the capture extends past the
+trace's recorded span and cannot be joined. The runner warns when it is shorter. The
+`vcgencmd get_throttled` gate runs before and after every session; a non-zero or unreadable
+answer aborts. `--skip-throttle-check` exists only for a dry run on a PC and is recorded in
+the manifest header.
+
 ### Malicious
 
 `malware_runner.py` is not yet written. It must match the benign runner on:

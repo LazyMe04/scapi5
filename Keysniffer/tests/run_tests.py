@@ -138,14 +138,43 @@ def check_goodware_runner():
         return []
 
     failures = []
+
+    # goodware_runner gates on `vcgencmd get_throttled`. This host is not a Pi,
+    # so the gate has to be opted out of explicitly; that opt-out is itself
+    # part of what the runner must enforce, and it is checked below.
     base = [PY, "-I", runner, "--task", "keyboard", "--count", "1",
-            "--duration", "0.1", "--dry-run", "--cooldown", "0"]
+            "--duration", "0.1", "--dry-run", "--cooldown", "0",
+            "--skip-throttle-check"]
+
+    # Without the opt-out the runner must refuse on a host with no vcgencmd.
+    proc = subprocess.run([PY, "-I", runner, "--task", "keyboard", "--count", "1",
+                           "--dry-run", "--cooldown", "0"],
+                          capture_output=True, text=True, check=False, timeout=120)
+    if proc.returncode == 0:
+        print("[PASS] goodware: vcgencmd available, gate exercised live")
+    else:
+        ok = "vcgencmd get_throttled is unavailable" in proc.stderr
+        print(f"[{'PASS' if ok else 'FAIL'}] goodware: refuses without "
+              f"--skip-throttle-check on a non-Pi host")
+        if not ok:
+            failures.append("goodware throttle gate")
+
+    # Keep the dry-run manifests out of the repo root: these runs are checks,
+    # not captures, and a stray manifest next to the runners is data that
+    # looks like a dataset. Each invocation gets its own file, because a
+    # second run against a non-empty manifest is refused without --resume.
+    import tempfile
+    art_dir = tempfile.mkdtemp(prefix="goodware_check_")
+    counter = [0]
 
     def go(env=None, argv=None):
         e = dict(os.environ)
         if env:
             e.update(env)
-        return subprocess.run(argv or base, capture_output=True, text=True,
+        counter[0] += 1
+        cmd = list(argv or base)
+        cmd += ["--manifest", os.path.join(art_dir, f"m{counter[0]}.jsonl")]
+        return subprocess.run(cmd, capture_output=True, text=True,
                               env=e, check=False, timeout=120)
 
     proc = go(env={"EMLAB_KEYSYNTH": "/nonexistent/keysynth"})
@@ -156,7 +185,6 @@ def check_goodware_runner():
 
     # A stub that mirrors keysynth's real stdout contract. `.bat` because the
     # test host is Windows; on the Pi the real binary is used.
-    import tempfile
     with tempfile.TemporaryDirectory() as tmp:
         stub = os.path.join(tmp, "keysynth_stub.bat")
         with open(stub, "w", encoding="utf-8", newline="\r\n") as fh:
@@ -169,9 +197,12 @@ def check_goodware_runner():
             failures.append("goodware injector count")
             print((proc.stdout + proc.stderr).strip()[-400:])
 
-    proc = subprocess.run([PY, "-I", runner, "--task", "all", "--count", "1",
-                           "--duration", "0.05", "--dry-run", "--cooldown", "0"],
-                          capture_output=True, text=True, check=False, timeout=180)
+    with tempfile.TemporaryDirectory() as tmp:
+        proc = subprocess.run([PY, "-I", runner, "--task", "all", "--count", "1",
+                               "--duration", "0.05", "--dry-run", "--cooldown", "0",
+                               "--skip-throttle-check",
+                               "--manifest", os.path.join(tmp, "m.jsonl")],
+                              capture_output=True, text=True, check=False, timeout=180)
     ok = proc.returncode == 0 and "KEYBOARD" not in proc.stdout
     print(f"[{'PASS' if ok else 'FAIL'}] goodware: --task all excludes keyboard "
           f"(keeps old campaigns comparable)")

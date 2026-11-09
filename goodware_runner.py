@@ -8,17 +8,45 @@ Features:
 - Dry-run mode for testing on PCs / non-Pi hardware without crashing.
 - 5 Standard Benign Workload Profiles (Idle, Cryptography, Compression, Math, Network).
 - Configurable trace count, execution duration, and trigger pins.
+- Append-only JSONL manifest with wall-clock bounds, so each trace can be joined
+  to the EM capture that recorded it (see pico-em-capture/manifest_join.py).
+- vcgencmd get_throttled gate: a throttled CPU invalidates the trace.
+
+The manifest
+------------
+Every trace is recorded before any judgement is made about it, with the
+wall-clock bounds the join needs:
+
+    started_utc      before the per-trace settle
+    trigger_on_utc   immediately before GPIO goes high
+    trigger_off_utc  immediately after GPIO goes low
+    finished_utc     after the trigger is released
+
+`started_utc`..`finished_utc` is the interval a capture must fall inside, and
+it deliberately starts before `trigger_on_utc`: the scope records pre-trigger
+samples, so its window begins *before* the GPIO edge.
 """
 
 import argparse
 import hashlib
+import json
 import os
+import platform
 import re
 import socket
 import subprocess
 import sys
 import time
 import zlib
+from datetime import datetime, timezone
+
+RUNNER_VERSION = "2.0.0"
+MANIFEST_SCHEMA = 1
+
+# Workload classes. `mode` is what the classifier sees, so it must name the
+# workload and nothing else: a trace labelled "crypto" that actually ran idle
+# is worse than a missing trace.
+MODE_PREFIX = "goodware"
 
 # -----------------------------------------------------------------------------
 # GPIO Hardware Trigger Handler (Pi 5 & Pi 4 Compatible)
@@ -116,6 +144,109 @@ class HardwareTrigger:
         else:
             if self.device:
                 self.device.close()
+
+
+# -----------------------------------------------------------------------------
+# Small helpers
+# -----------------------------------------------------------------------------
+def utc_now():
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def stamp():
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def read_throttled():
+    """
+    Return the raw `vcgencmd get_throttled` response, or None when the command
+    cannot be run (not a Pi, no vcgencmd).
+
+    None is distinct from "readable but non-zero": the caller has to decide,
+    and on a Pi a missing vcgencmd is a broken environment, not a pass.
+    """
+    try:
+        proc = subprocess.run(["vcgencmd", "get_throttled"],
+                              capture_output=True, text=True, timeout=10,
+                              check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return (proc.stdout or "").strip() if proc.returncode == 0 else None
+
+
+def throttle_state(response):
+    """
+    Parse the throttle mask. Returns a list of ints, empty if unreadable.
+
+    Mirrors pico-em-capture/session.py: a substring search would accept
+    "0x0" inside a longer non-zero value, and an empty response would pass.
+    """
+    return [int(v, 16) for v in re.findall(r"throttled\s*=\s*0x([0-9a-fA-F]+)",
+                                           response or "")]
+
+
+def assert_not_throttled(response, when):
+    """Raise ValueError unless every reported throttle bit is clear."""
+    values = throttle_state(response)
+    if values and all(v == 0 for v in values):
+        return
+    if not values:
+        raise ValueError(
+            f"cannot read the throttle state {when}: got {response!r}. The "
+            f"invariant needs 'throttled=0x0'; an unreadable answer is a "
+            f"failure, not a pass."
+        )
+    raise ValueError(
+        f"Pi is throttled {when}: {response!r}. The CPU clock is not stable, "
+        f"so any trace captured now is invalid. Fix power/cooling and rerun. "
+        f"(0x5000 = under-voltage now, 0x40000 = throttled since boot.)"
+    )
+
+
+def write_manifest_line(path, record):
+    """Append one JSONL line. Append-only: nothing earlier is rewritten."""
+    directory = os.path.dirname(os.path.abspath(path))
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def read_manifest(path):
+    """Trace records already in a manifest; [] when the file does not exist."""
+    if not path or not os.path.exists(path):
+        return []
+    records = []
+    with open(path, "r", encoding="utf-8") as fh:
+        for lineno, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"{path}:{lineno}: not valid JSON ({exc}); refusing to "
+                    f"resume from a manifest this tool cannot read"
+                ) from exc
+    return [r for r in records if r.get("type", "trace") == "trace"]
+
+
+def next_trace_index(records):
+    indices = [int(r["trace_index"]) for r in records
+               if isinstance(r.get("trace_index"), int)]
+    return max(indices) + 1 if indices else 0
+
+
+def _per_task_manifest(manifest_path, task):
+    """
+    `<name>.<task>.jsonl` next to the requested manifest, for `--task all`.
+
+    Each task is its own cell, so it gets its own file: one file per cell is
+    what makes "this trace ran under this workload" checkable at all.
+    """
+    stem, ext = os.path.splitext(manifest_path)
+    return f"{stem}.{task}{ext or '.jsonl'}"
 
 
 # -----------------------------------------------------------------------------
@@ -287,54 +418,199 @@ ALL_TASKS = ["idle", "crypto", "compress", "math", "network"]
 # -----------------------------------------------------------------------------
 # Main Runner Loop
 # -----------------------------------------------------------------------------
-def run_benchmark(task_name, count, duration, trigger, cooldown=0.3):
+def _trigger_label(trigger):
+    if trigger.use_act_led:
+        return f"ACT LED ({trigger.act_led_brightness_path})"
+    return f"Pin {trigger.pin}"
+
+
+def run_trace(index, task_name, duration, trigger, lead_in_s=0.05):
+    """
+    Execute one trace. Never raises for a workload failure: the record is the
+    evidence that the trace happened at all, so it is written either way.
+
+    The wall-clock bounds bracket the trigger, not merely the workload call.
+
+    `started_utc` is taken before the lead-in and before `trigger.on()`, and
+    both are deliberate. The scope records pre-trigger samples, so the EM
+    capture starts *before* the GPIO edge. If this record claimed to start at
+    the edge, the capture's window would begin before the runner's span and
+    containment would fail - the trace would exist but not be joinable. The
+    lead-in covers that pre-trigger interval.
+    """
+    record = {
+        "type": "trace",
+        "trace_index": index,
+        "mode": f"{MODE_PREFIX}-{task_name}",
+        "status": "ok",
+        "started_utc": utc_now(),
+        "lead_in_s": round(float(lead_in_s), 6),
+        "trigger_on_utc": None,
+        "trigger_off_utc": None,
+        "finished_utc": None,
+        "wall_s": None,
+        "result": None,
+        "dry_run": bool(trigger.dry_run),
+        "notes": [],
+    }
+
+    # Let the scope arm and fill its pre-trigger buffer before the edge.
+    if lead_in_s:
+        time.sleep(lead_in_s)
+
+    trigger.on()
+    record["trigger_on_utc"] = utc_now()
+    exec_start = time.perf_counter()
+    try:
+        result = WORKLOADS[task_name](duration=duration)
+    except RuntimeError as exc:
+        # A workload that cannot run is a failed trace, not a reason to
+        # abandon the campaign silently. The record says why.
+        record["status"] = "workload-failed"
+        record["notes"].append(str(exc))
+        result = None
+    finally:
+        trigger.off()
+        record["trigger_off_utc"] = utc_now()
+        record["wall_s"] = round(time.perf_counter() - exec_start, 6)
+    record["result"] = result
+    record["finished_utc"] = utc_now()
+    return record
+
+
+def run_benchmark(task_name, count, duration, trigger, cooldown=0.3,
+                  manifest_path=None, resume=False, skip_throttle_check=False,
+                  capture_duration=None, pre_trigger_s=0.005):
     workload_fn = WORKLOADS.get(task_name)
     if not workload_fn:
         print(f"Error: Unknown task '{task_name}'. Available: {list(WORKLOADS.keys())}")
         sys.exit(1)
 
+    # The capture window comes from the scope, which this runner does not
+    # control. Warn when the workload is shorter than it, because the capture
+    # will then extend past the runner's recorded span and the join cannot
+    # place it inside any trace.
+    if capture_duration is not None and duration < float(capture_duration):
+        print(
+            f"[WARN] workload duration {duration:.2f}s is shorter than the "
+            f"capture window {float(capture_duration):.2f}s. The EM capture "
+            f"will start before and end after this trace's recorded span, so "
+            f"it will not be joinable. Pass --duration >= the scope's "
+            f"--duration."
+        )
+
+    existing = read_manifest(manifest_path) if manifest_path else []
+    if existing and not resume:
+        raise ValueError(
+            f"{manifest_path} already holds {len(existing)} trace(s). Pass "
+            f"--resume to continue that session, or choose a new --manifest "
+            f"(or run directory) to start a separate one."
+        )
+    start_index = next_trace_index(existing) if existing else 0
+
     print("\n=======================================================")
     print(f" Goodware Acquisition Runner: {task_name.upper()}")
     print(f" Target Runs   : {count}")
     print(f" Trace Duration: {duration:.2f} seconds")
-    trigger_desc = f"ACT LED ({trigger.act_led_brightness_path})" if trigger.use_act_led else f"Pin {trigger.pin}"
-    print(f" GPIO Trigger  : {trigger_desc} (Dry-run: {trigger.dry_run})")
+    print(f" GPIO Trigger  : {_trigger_label(trigger)} (Dry-run: {trigger.dry_run})")
     print(f" Cooldown      : {cooldown:.2f} seconds")
+    if manifest_path:
+        print(f" Manifest      : {manifest_path}"
+              + (f" (resuming at {start_index})" if start_index else ""))
     print("=======================================================\n")
+
+    throttle_before = read_throttled()
+    if not skip_throttle_check:
+        assert_not_throttled(throttle_before, "before the session")
+    else:
+        print("[WARN] --skip-throttle-check: the throttle invariant is NOT "
+              "enforced. Do not label these traces as dataset.")
+
+    # The lead-in must exceed the scope's pre-trigger interval, otherwise the
+    # capture's window still starts before `started_utc`.
+    lead_in_s = max(0.05, 2.0 * float(pre_trigger_s))
+
+    if manifest_path:
+        write_manifest_line(manifest_path, {
+            "type": "header",
+            "schema": MANIFEST_SCHEMA,
+            "runner_version": RUNNER_VERSION,
+            "started_utc": utc_now(),
+            "resumed": bool(start_index),
+            "start_index": start_index,
+            "task": task_name,
+            "mode_prefix": MODE_PREFIX,
+            "count": count,
+            "duration_s": duration,
+            "cooldown_s": cooldown,
+            "capture_duration_s": capture_duration,
+            "pre_trigger_s": float(pre_trigger_s),
+            "lead_in_s": lead_in_s,
+            "trigger": {
+                "kind": "act_led" if trigger.use_act_led else "gpio",
+                "pin": None if trigger.use_act_led else trigger.pin,
+                "dry_run": bool(trigger.dry_run),
+            },
+            "throttle_before": throttle_before,
+            "throttle_checked": not skip_throttle_check,
+            "host": {
+                "node": socket.gethostname(),
+                "platform": platform.platform(),
+                "machine": platform.machine(),
+                "python": platform.python_version(),
+            },
+        })
 
     # Initial settling time to stabilize CPU clock
     time.sleep(1.0)
 
-    for run_idx in range(1, count + 1):
-        print(f"[{run_idx:04d}/{count:04d}] Arming Trigger -> Executing '{task_name}'...", end="", flush=True)
+    clean = failed = 0
+    try:
+        for offset in range(count):
+            # trace_index is 0-based and continues across resumes, matching the
+            # capture app and kisni_runner; the console shows 1-based progress.
+            trace_index = start_index + offset
+            print(f"[{offset + 1:04d}/{count:04d}] Arming Trigger -> "
+                  f"Executing '{task_name}'...", end="", flush=True)
 
-        # 1. Start Trigger (GPIO HIGH)
-        trigger.on()
+            record = run_trace(trace_index, task_name, duration, trigger,
+                               lead_in_s=lead_in_s)
+            if manifest_path:
+                write_manifest_line(manifest_path, record)
 
-        # 2. Execute Workload
-        exec_start = time.perf_counter()
-        try:
-            result = workload_fn(duration=duration)
-        except RuntimeError as exc:
-            # A workload that cannot run is a failed trace, not a reason to
-            # abandon the campaign: stop here and report, so the remaining
-            # traces are not silently recorded as idle.
-            trigger.off()
-            print(f" FAILED\n[Error] {exc}")
-            print(f"\n[Aborted] Trace {run_idx} failed; no further traces run.\n")
-            return False
-        exec_end = time.perf_counter()
+            stat = record["result"] if record["result"] is not None else "OK"
+            print(f" Done in {record['wall_s']:.3f}s (Stat: {stat})")
 
-        # 3. Stop Trigger (GPIO LOW)
-        trigger.off()
+            if record["status"] == "ok":
+                clean += 1
+            else:
+                failed += 1
+                print(f"\n[Aborted] Trace {trace_index} failed: "
+                      f"{record['notes'][0] if record['notes'] else 'unknown'}")
+                print("No further traces run; the failed trace is in the manifest.\n")
+                break
 
-        actual_duration = exec_end - exec_start
-        print(f" Done in {actual_duration:.3f}s (Stat: {result if result is not None else 'OK'})")
+            # Inter-trace cooldown (allow CPU to return to baseline governor
+            # frequency).
+            time.sleep(cooldown)
+    finally:
+        throttle_after = None if skip_throttle_check else read_throttled()
+        if manifest_path:
+            write_manifest_line(manifest_path, {
+                "type": "footer",
+                "finished_utc": utc_now(),
+                "clean": clean,
+                "failed": failed,
+                "throttle_after": throttle_after,
+                "throttle_checked": not skip_throttle_check,
+            })
+        if not skip_throttle_check:
+            assert_not_throttled(throttle_after, "after the session")
 
-        # 4. Inter-trace Cooldown (allow CPU to return to baseline governor frequency)
-        time.sleep(cooldown)
-
-    print(f"\n[Completed] Successfully executed {count} traces of '{task_name}'.\n")
+    if failed:
+        print(f"\n[Completed] {clean}/{clean + failed} traces of '{task_name}'.\n")
+        return False
+    print(f"\n[Completed] Successfully executed {clean} traces of '{task_name}'.\n")
     return True
 
 
@@ -380,8 +656,69 @@ def main():
         default=0.3,
         help="Cooldown pause between traces in seconds (default: 0.3s)"
     )
+    parser.add_argument(
+        "--manifest",
+        default=None,
+        help="Append-only JSONL manifest for this session. Default: "
+             "goodware_manifest_<utc>.jsonl in the current directory. The "
+             "manifest is what lets a capture be joined to the trace that "
+             "produced it, so a campaign without one cannot be analysed."
+    )
+    parser.add_argument(
+        "--run-dir",
+        default=None,
+        help="Write the manifest to <run-dir>/manifest.jsonl (overrides "
+             "--manifest)."
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Continue an existing manifest at max(trace_index)+1 instead of "
+             "refusing a non-empty one."
+    )
+    parser.add_argument(
+        "--capture-duration",
+        type=float,
+        default=None,
+        help="The scope's capture window in seconds, recorded in the manifest "
+             "header. When it is longer than --duration the capture extends "
+             "past this trace's span and cannot be joined; a warning is printed."
+    )
+    parser.add_argument(
+        "--pre-trigger",
+        type=float,
+        default=0.005,
+        help="The scope's pre-trigger interval in seconds (default: 0.005 = "
+             "the capture app's 10,000 samples at 2 MHz). The runner waits at "
+             "least twice this before the GPIO edge so the capture's window "
+             "starts inside the trace's recorded span. Recorded in the header."
+    )
+    parser.add_argument(
+        "--skip-throttle-check",
+        action="store_true",
+        help="Do not run vcgencmd get_throttled. ONLY valid on a host without "
+             "vcgencmd (a dry run on a PC); never for dataset capture."
+    )
 
     args = parser.parse_args()
+
+    if args.manifest and args.run_dir:
+        parser.error("--manifest and --run-dir are mutually exclusive")
+    manifest_path = args.manifest
+    if args.run_dir:
+        os.makedirs(args.run_dir, exist_ok=True)
+        manifest_path = os.path.join(args.run_dir, "manifest.jsonl")
+    if not manifest_path:
+        manifest_path = f"goodware_manifest_{stamp()}.jsonl"
+
+    # dry_run=True in the trigger OR no vcgencmd means the throttle gate cannot
+    # be enforced. Refuse to pretend otherwise unless the operator asked.
+    if not args.skip_throttle_check and read_throttled() is None:
+        parser.error(
+            "vcgencmd get_throttled is unavailable, so the throttle invariant "
+            "cannot be checked. This is expected on a PC; pass "
+            "--skip-throttle-check for a rehearsal, and leave it off on the Pi."
+        )
 
     trigger = HardwareTrigger(pin=args.gpio_pin, use_act_led=args.use_act_led, dry_run=args.dry_run)
 
@@ -389,13 +726,31 @@ def main():
     try:
         if args.task == "all":
             for task in ALL_TASKS:
-                if not run_benchmark(task, args.count, args.duration, trigger, args.cooldown):
+                # One manifest per cell. Sharing one file across five tasks
+                # would make the first task's traces look like a manifest that
+                # the second task is about to append to, which is exactly the
+                # mixed-configuration case the refusal exists for.
+                cell_manifest = _per_task_manifest(manifest_path, task)
+                if not run_benchmark(task, args.count, args.duration, trigger,
+                                     args.cooldown, manifest_path=cell_manifest,
+                                     resume=args.resume,
+                                     skip_throttle_check=args.skip_throttle_check,
+                                     capture_duration=args.capture_duration,
+                                     pre_trigger_s=args.pre_trigger):
                     ok = False
                     break
         else:
-            ok = run_benchmark(args.task, args.count, args.duration, trigger, args.cooldown)
+            ok = run_benchmark(args.task, args.count, args.duration, trigger,
+                               args.cooldown, manifest_path=manifest_path,
+                               resume=args.resume,
+                               skip_throttle_check=args.skip_throttle_check,
+                               capture_duration=args.capture_duration,
+                               pre_trigger_s=args.pre_trigger)
     except KeyboardInterrupt:
         print("\n[Interrupted] Execution aborted by user.")
+        ok = False
+    except ValueError as exc:
+        print(f"\n[REFUSED] {exc}")
         ok = False
     finally:
         trigger.off()
