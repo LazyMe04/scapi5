@@ -85,4 +85,44 @@ One row per completed run. The module hash must match §2 for every row.
 
 | Run | Date | Mode | Traces | Module sha256 | Manifest |
 |---|---|---|---|---|---|
+| `smoke03` | 2026-11-15 | `kisni-typing` | 96 | `TODO: copy from smoke03 header` | `TODO: path on Pi` |
 | `TODO` | | | | | |
+
+## 6. Measurement-chain smoke test — `smoke03` (2026-11-15)
+
+Purpose: prove the debugfs activity path end to end on the real kernel, after the
+`stat`-based size bug was replaced by a read-length measurement. **This is not the EM
+dataset**: no scope capture is described here.
+
+| Field | Value |
+|---|---|
+| Date | 2026-11-15 |
+| Kernel | `6.18.50+rpt-rpi-2712` |
+| Runner | `kisni_runner.py` 1.0.0, manifest schema 1 |
+| Mode | `kisni-typing` |
+| Traces | 96 consecutive (one module load/unload per trace) |
+| Status | 96/96 `ok` |
+| `debugfs_bytes_before` | 0 on every trace (fresh module instance) |
+| `debugfs_delta` | 160 on every trace |
+| `keystroke_count` | 50, taken from keysynth stdout |
+| `lsmod_after` | `false` on 96/96 |
+| `keysynth_leftover` | 0 on 96/96 |
+| Analyzer | no behavioral or manifest problem; non-zero only for `2x2 ablation incomplete` (three control cells not yet collected) |
+| Manifest | `TODO: path on Pi` |
+| Module sha256 | `TODO: copy from smoke03 header` |
+
+What this establishes:
+
+- the read-based measurement works on the target kernel. The previous
+  `os.stat().st_size` path returned 0 before and after the trace, so this same run would
+  have reported `debugfs_delta = 0` and `status = "no-activity"` on every trace;
+- 96 load/unload cycles completed without a module leak or a surviving injector, which
+  exceeds the 50-cycle rehearsal required by Phase 5;
+- the injected workload was identical across traces (same key sequence, rate and window),
+  so the byte delta is deterministic and the buffer never wrapped.
+
+What this does **not** establish: any EM-side-channel separability, the missing 2x2
+control cells (`typing-only`, `kisni-idle`, `idle`), or a completed dataset. The behavioral
+figures above are transcribed from the bench session report, not re-derived from the
+manifest in this repo; transcribe `expected_hash`, `trigger`/`gpio_pin`, `codes`, `rate`,
+`duration_s` and the manifest path from the smoke03 header before citing this run.

@@ -36,6 +36,25 @@ that decides whether to load a module should be proven before a module is involv
 | `keysni_preflight.py` | Read-only Phase 1/3.1/5 gate: image, throttling, headers, `CONFIG_MODULE_SIG*`, debugfs, uinput |
 | `tools/keysynth.c` | `uinput` keyboard injector, absolute-clock scheduled |
 | `tests/run_tests.py` | All host-runnable checks in one command |
+| `docs/PI5_Keysniffer_HuongDan.md` | Detailed Vietnamese runbook: prerequisites, gates, exact commands, troubleshooting |
+| `docs/PI5_Keysniffer_HuongDan.docx` | Vietnamese operator guide (generated; not the source of truth) |
+| `docgen/build_keysni_guide.py` | Generates the guide from this repo's facts; rerun after any procedural change |
+
+## Vietnamese operator guide
+
+`docs/PI5_Keysniffer_HuongDan.docx` is the counterpart of
+`Bashlite/docs/PI5_Bashlite_HuongDan.docx`: same chapter structure, different
+content, because this family is measured differently. It is **generated**, and
+the Markdown files here remain the source of truth — when they disagree, the
+Markdown wins and the generator needs fixing.
+
+`docs/PI5_Keysniffer_HuongDan.md` is the detailed runbook version (Vietnamese) with the
+exact commands, pass/fail gates, and the failure modes found while reviewing the code.
+Use it at the bench; the `.docx` is the polished companion.
+
+```bash
+uv run --no-project --with python-docx python -I Keysniffer/docgen/build_keysni_guide.py
+```
 
 ## Running the tests
 

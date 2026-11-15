@@ -10,6 +10,9 @@ Phase 10 says must be answered *before* any model is trained:
      result is measuring the workload rather than the rootkit.
   3. Did every trace start from a fresh module instance?
   4. Did any trace fail, leak the module, or record nothing?
+  5. Do the manifests describe one experiment at all — same module bytes,
+     kernel, `codes=` mode, trigger, injector and timing? Two individually
+     clean manifests can still be two different experiments.
 
 It also refutes the trivially-invalid cases loudly, because a quiet "OK" on a
 broken dataset is worse than no tool at all.
@@ -59,7 +62,79 @@ def split(records):
     return headers, traces, footers
 
 
-def analyse(traces):
+# Fields that define *which experiment* a trace belongs to. A manifest per cell
+# means one dataset spans several headers; if any of these differ, the cells were
+# not measured under the same conditions and combining them is an artefact.
+HEADER_IDENTITY_FIELDS = (
+    ("expected_hash", "expected module hash"),
+    ("kernel_release", "kernel release"),
+    ("codes", "codes parameter"),
+    ("trigger", "trigger source"),
+    ("gpio_pin", "GPIO pin"),
+    ("rate", "keystroke rate"),
+    ("duration_s", "trace duration"),
+    ("injector", "injector"),
+    ("schema", "manifest schema"),
+    ("runner_version", "runner version"),
+)
+TRACE_IDENTITY_FIELDS = (
+    ("module_sha256", "module hash"),
+    ("kernel_release", "kernel release"),
+)
+
+
+def _identity_value(field, value):
+    """Normalise a value so equivalent spellings compare equal (not artifact drift)."""
+    if value is None:
+        return None
+    if field == "expected_hash":
+        return str(value).strip().lower()
+    if field in ("rate", "duration_s"):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return value
+    if isinstance(value, str):
+        return value.strip()
+    return value
+
+
+def dataset_identity(headers, traces):
+    """Return problems where the manifests describe more than one experiment.
+
+    Every check above can pass on a dataset assembled from two builds, two
+    kernels, or two trigger setups: each half is internally clean. These fields
+    are not per-trace comparisons, so they have to be checked explicitly.
+    """
+    problems = []
+
+    def check(fields, rows):
+        for field, label in fields:
+            seen = {_identity_value(field, r.get(field)) for r in rows
+                    if r.get(field) is not None}
+            if len(seen) > 1:
+                shown = ", ".join(sorted(repr(v) for v in seen))
+                problems.append(f"dataset mixes values for {label}: {shown}")
+
+    check(HEADER_IDENTITY_FIELDS, headers)
+    check(TRACE_IDENTITY_FIELDS, traces)
+
+    # A run's expected hash is the pin; a trace that does not match any pin was
+    # produced by a module this dataset does not describe.
+    pinned = {_identity_value("expected_hash", h.get("expected_hash"))
+              for h in headers if h.get("expected_hash") is not None}
+    observed = {_identity_value("expected_hash", t.get("module_sha256"))
+                for t in traces if t.get("module_sha256") is not None}
+    unmatched = observed - pinned
+    if pinned and unmatched:
+        shown = ", ".join(sorted(unmatched))
+        problems.append(
+            f"trace module hash not pinned by any manifest header: {shown}")
+
+    return problems
+
+
+def analyse(traces, headers=None):
     """Return a dict of findings. Pure function, so it is testable."""
     out = {
         "total": len(traces),
@@ -88,6 +163,10 @@ def analyse(traces):
     if missing:
         out["problems"].append(
             "2x2 ablation incomplete: missing cell(s) " + ", ".join(sorted(missing)))
+
+    # ---- 1b. is this one experiment? ----
+    for problem in dataset_identity(headers or [], traces):
+        out["problems"].append(problem)
 
     # ---- 2. comparability of the two typing cells ----
     # If the injected workload differs between the cell with the module and the
@@ -223,7 +302,8 @@ def self_test():
             failures.append(label)
 
     def trace(mode, status="ok", delta=None, before=0, idx=0, hash_="aaa",
-              interval=50, window_ms=2500.0, dry=False):
+              interval=50, window_ms=2500.0, dry=False,
+              module_hash="a" * 64, kernel="6.18.50+rpt-rpi-2712"):
         # Default delta models reality: only a loaded module that also sees
         # keystrokes records anything. `idle` has no module at all (None),
         # `kisni-idle` has the module but nothing is typed (0).
@@ -237,6 +317,7 @@ def self_test():
             "keystroke_file_sha256": hash_, "keystroke_interval_ms": interval,
             "window_ns": int(window_ms * 1e6), "dry_run": dry,
             "module_required": mode.startswith("kisni"),
+            "module_sha256": module_hash, "kernel_release": kernel,
             "notes": [],
         }
 
@@ -244,8 +325,17 @@ def self_test():
         return [trace("kisni-typing", idx=0, **kw), trace("typing-only", idx=1, **kw),
                 trace("kisni-idle", idx=2, **kw), trace("idle", idx=3, **kw)]
 
+    def header(**kw):
+        h = {"type": "header", "schema": 1, "runner_version": "1.0.0",
+             "expected_hash": "a" * 64,
+             "kernel_release": "6.18.50+rpt-rpi-2712",
+             "codes": 1, "trigger": "gpio17", "gpio_pin": 17,
+             "rate": 20.0, "duration_s": 2.5, "injector": "uinput"}
+        h.update(kw)
+        return h
+
     # 1. a clean, complete dataset produces no problems
-    r = analyse(complete())
+    r = analyse(complete(), headers=[header()])
     expect(not r["problems"], f"clean dataset flagged: {r['problems']}")
     expect(not r["warnings"], f"clean dataset warned: {r['warnings']}")
 
@@ -330,6 +420,48 @@ def self_test():
     expect(not any("idle recorded keystrokes" in x for x in r["warnings"]),
            "idle wrap misreported as keystrokes")
 
+    # 15. two headers pinning different module hashes: each run was clean, the
+    # dataset is still two experiments.
+    r = analyse(complete(), headers=[header(), header(expected_hash="b" * 64)])
+    expect(any("expected module hash" in p for p in r["problems"]),
+           "module hash drift across manifests not flagged")
+
+    # 16. a different `codes=` mode changes the record width, so byte deltas are
+    # not comparable even when both runs recorded correctly.
+    r = analyse(complete(), headers=[header(), header(codes=2)])
+    expect(any("codes parameter" in p for p in r["problems"]),
+           "codes drift not flagged")
+
+    # 17. a software-triggered cell cannot join a GPIO-triggered dataset: the
+    # scope has no edge to align it to.
+    r = analyse(complete(), headers=[header(),
+                                     header(trigger="software", gpio_pin=None)])
+    expect(any("trigger source" in p for p in r["problems"]),
+           "trigger drift not flagged")
+
+    # 18. equivalent spellings and per-run flags are not dataset drift
+    r = analyse(complete(), headers=[header(),
+                                     header(expected_hash="A" * 64,
+                                            allow_taint=True)])
+    expect(not any("dataset mixes" in p for p in r["problems"]),
+           f"equivalent headers flagged: {r['problems']}")
+    expect(not any("not pinned" in p for p in r["problems"]),
+           f"uppercase hash treated as a different module: {r['problems']}")
+
+    # 19. per-trace module hash drift is caught even with a single header
+    r = analyse([trace("kisni-typing", idx=0),
+                 trace("typing-only", idx=1, module_hash="b" * 64)],
+                headers=[header()])
+    expect(any("values for module hash" in p for p in r["problems"]),
+           "per-trace module hash drift not flagged")
+
+    # 20. traces from two kernels cannot share a dataset
+    r = analyse([trace("kisni-typing", idx=0),
+                 trace("typing-only", idx=1, kernel="6.1.0-v8+")],
+                headers=[header()])
+    expect(any("values for kernel release" in p for p in r["problems"]),
+           "kernel drift across traces not flagged")
+
     if failures:
         print(f"SELF-TEST FAILED ({len(failures)} of {checks[0]})")
         for f in failures:
@@ -360,7 +492,7 @@ def main(argv=None):
         print("no trace records found", file=sys.stderr)
         return 2
 
-    result = analyse(traces)
+    result = analyse(traces, headers=headers)
     result["parse_errors"] = errors
     result["headers"] = len(headers)
 

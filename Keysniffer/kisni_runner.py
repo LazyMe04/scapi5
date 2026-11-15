@@ -68,6 +68,7 @@ RUNNER_VERSION = "1.0.0"
 MANIFEST_SCHEMA = 1
 
 DEBUGFS_PATH = "/sys/kernel/debug/kisni/keys"
+DEBUGFS_BUF_LEN = 16384          # upstream wraps at 16 KiB; bounds every read
 MODULE_NAME = "kisni"
 SETTLE_S = 1.0
 
@@ -148,11 +149,42 @@ class Machine:
         return any(line.split() and line.split()[0] == name
                    for line in out.splitlines())
 
-    def debugfs_size(self, path=DEBUGFS_PATH):
+    def debugfs_bytes(self, path=DEBUGFS_PATH):
+        """Bytes of key-log content currently in the debugfs buffer.
+
+        `os.stat(path).st_size` must not be used here. debugfs creates the
+        inode with `i_size = 0`, and the module's read handler
+        (`simple_read_from_buffer`) never updates it, so st_size reads 0 both
+        before and after a trace even when the module recorded 160 bytes. On
+        kernel 6.18.50+rpt-rpi-2712 that turned every real trace into a
+        zero delta and a `no-activity` failure. The only reliable size is the
+        length of what read(2) actually returns.
+
+        Reads are bounded by the 16 KiB ring buffer, and stop if a read
+        returns the previous chunk again: a handler that ignores *ppos cannot
+        make this loop spin or count the same bytes twice. The descriptor is
+        opened fresh, so the buffer is read from offset 0.
+        """
         try:
-            return os.stat(path).st_size
+            fd = os.open(path, os.O_RDONLY)
         except OSError:
             return None
+        total = 0
+        previous = None
+        try:
+            while total < DEBUGFS_BUF_LEN:
+                chunk = os.read(fd, DEBUGFS_BUF_LEN - total)
+                if not chunk:
+                    break
+                if chunk == previous:
+                    break       # *ppos ignored: these bytes were already counted
+                total += len(chunk)
+                previous = chunk
+            return total
+        except OSError:
+            return None
+        finally:
+            os.close(fd)
 
     def dmesg_tail(self, lines=20):
         rc, out, _ = run_cmd(["dmesg"])
@@ -236,7 +268,7 @@ class FakeMachine(Machine):
         self.calls.append(("lsmod_has", name))
         return self.loaded
 
-    def debugfs_size(self, path=DEBUGFS_PATH):
+    def debugfs_bytes(self, path=DEBUGFS_PATH):
         if not self.loaded:
             return None
         return self.bytes
@@ -432,7 +464,7 @@ def run_trace(trace_index, args, machine, dry_run):
 
     machine.sleep(SETTLE_S)
 
-    before = machine.debugfs_size()
+    before = machine.debugfs_bytes()
     record["debugfs_bytes_before"] = before
 
     on_ns = time.monotonic_ns()
@@ -485,7 +517,7 @@ def run_trace(trace_index, args, machine, dry_run):
 
     record["trigger_edge_ns_off"] = time.monotonic_ns()
 
-    after = machine.debugfs_size()
+    after = machine.debugfs_bytes()
     record["debugfs_bytes_after"] = after
     if before is not None and after is not None:
         record["debugfs_delta"] = after - before
@@ -727,6 +759,19 @@ def self_test():
     # 18. a genuinely empty delta is still a failure.
     rec = run_trace(0, base, FakeMachine(grow=False), dry_run=False)
     expect(rec["status"] == "no-activity", f"zero delta gave {rec['status']}")
+
+    # 18b. regression: the measurement must be the length of the read, not
+    # st_size. debugfs inodes report st_size == 0 while holding data, so any
+    # stat-based size silently reports "nothing recorded". /proc/version has
+    # the same shape on Linux and is available without root.
+    absent = Machine().debugfs_bytes("/nonexistent/kisni/keys")
+    expect(absent is None, f"absent debugfs path gave {absent}, expected None")
+    if os.path.isfile("/proc/version"):
+        stat_size = os.stat("/proc/version").st_size
+        read_size = Machine().debugfs_bytes("/proc/version")
+        expect(stat_size == 0, f"/proc/version fixture no longer stat-empty ({stat_size})")
+        expect(read_size is not None and read_size > 0,
+               f"debugfs_bytes returned {read_size} for a file with content")
 
     # 19. the taint baseline gate rejects an already-tainted kernel, and
     # --allow-taint accepts it explicitly.

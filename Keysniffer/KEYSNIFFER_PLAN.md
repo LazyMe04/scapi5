@@ -311,8 +311,12 @@ lsmod | grep kisni
 Then type on the console (see Phase 6 for the injector) and confirm the log grows:
 
 ```bash
-stat -c %s /sys/kernel/debug/kisni/keys
+sudo cat /sys/kernel/debug/kisni/keys | wc -c
 ```
+
+`stat -c %s` (and `ls -l`) reports 0 here: debugfs inodes are created with `i_size = 0`
+and the module's read handler never updates it, so size must be taken from the read, not
+from stat.
 
 Unload and confirm a clean exit:
 
