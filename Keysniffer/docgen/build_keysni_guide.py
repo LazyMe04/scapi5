@@ -643,6 +643,9 @@ callout("warn", "Không dùng stat -c %s (hay ls -l) để đếm byte",
         "(simple_read_from_buffer) không cập nhật nó, nên trên kernel "
         "6.18.50+rpt-rpi-2712 stat báo 0 cả trước lẫn sau dù buffer đã có nội dung. "
         "Chỉ độ dài dữ liệu read trả về mới đúng; runner đo theo cách này.")
+p("Mốc hiệu chuẩn đã đo được trên kernel 6.18.50+rpt-rpi-2712: `smoke03` với 50 phím và "
+  "`codes=1` cho delta = **160 byte** ổn định trên 96/96 trace. Đó là mốc tham chiếu, không "
+  "phải yêu cầu tuyệt đối — keyfile hoặc `codes=` khác sẽ cho độ dài record khác.")
 callout("danger", "Trường hợp thứ ba mà không đổi thì dừng lại",
         "Nếu gõ SSH mà byte count *có* tăng, mô hình của tài liệu này sai và phải xem lại trước khi "
         "chụp bất cứ trace nào. Nếu trường hợp một **không** tăng, `keysynth` hoặc VT chưa đúng — "
@@ -717,6 +720,11 @@ callout("info", "Smoke dataset một cell sẽ trả non-zero — đó là đún
         "báo `2x2 ablation incomplete` và exit khác 0. Điều cần kiểm tra ở bước này là "
         "**không có problem nào khác**: `status` sạch, `debugfs_delta > 0`, không có "
         "`no-activity`. Đừng bỏ qua cảnh báo ablation khi chụp dataset cuối.")
+callout("info", "Kết quả smoke03 — mốc so sánh",
+        "Trên kernel 6.18.50+rpt-rpi-2712, 96 trace `kisni-typing` liên tiếp đều `ok`, "
+        "`debugfs_delta = 160`, `keystroke_count = 50`, `lsmod_after = false`, "
+        "`keysynth_leftover = 0`. Analyzer không báo problem hành vi nào, chỉ thiếu 3 cell "
+        "đối chứng — đúng như một smoke dataset một cell.")
 
 page_break()
 

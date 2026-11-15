@@ -441,7 +441,9 @@ echo "before=$BEFORE after=$AFTER delta=$((AFTER-BEFORE))"
 sudo rmmod kisni
 ```
 
-Kỳ vọng: `delta > 0`, xấp xỉ số phím đã gõ (mỗi phím là một record).
+Kỳ vọng: `delta > 0`, xấp xỉ số phím đã gõ (mỗi phím là một record). Trên kernel
+6.18.50+rpt-rpi-2712, `smoke03` với 50 phím và `codes=1` cho delta = **160 byte** ổn định
+trên 96/96 trace — dùng con số này làm mốc hiệu chuẩn, không phải làm yêu cầu tuyệt đối.
 
 > **Đừng dùng `stat -c %s` (kể cả `ls -l`).** debugfs tạo inode với `i_size = 0` và
 > handler đọc của module (`simple_read_from_buffer`) không cập nhật nó, nên trên kernel
@@ -652,6 +654,13 @@ python3 -I /home/emlab/work/tools/keysni_analyze.py \
 Với **một cell**, analyzer sẽ trả **khác 0** vì `2x2 ablation incomplete: missing cell(s)
 ...`. Đó là hành vi đúng, không phải trace hỏng. Điều cần kiểm tra là không có problem nào
 khác: `status` sạch, `debugfs_delta > 0`, không có `no-activity`.
+
+`smoke03` trên kernel 6.18.50+rpt-rpi-2712 là ví dụ đã đạt: 96/96 trace `ok`,
+`debugfs_delta = 160`, và analyzer chỉ báo thiếu 3 cell đối chứng.
+
+Analyzer cũng coi việc **các manifest không mô tả cùng một thí nghiệm** là problem, không
+phải warning: khác `expected_hash`, kernel, `codes=`, trigger/GPIO pin, rate, duration,
+injector, schema hoặc runner version (chi tiết ở §12).
 
 Analyzer chỉ trả 0 khi dataset có **đủ bốn cell**. Đừng "sửa" bằng cách bỏ qua cảnh báo.
 

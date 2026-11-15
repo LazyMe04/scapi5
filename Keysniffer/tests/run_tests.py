@@ -18,6 +18,7 @@ Run::
 Exit code 0 means every check passed.
 """
 
+import json
 import os
 import platform
 import subprocess
@@ -98,6 +99,7 @@ def main():
             failures.append("end-to-end")
             print((proc.stdout + proc.stderr).strip())
 
+    failures += check_analyzer_identity()
     failures += check_goodware_runner()
     failures += check_lint()
 
@@ -128,6 +130,59 @@ def check_lint():
         print(proc.stdout.strip())
         return ["lint"]
     return []
+
+
+def check_analyzer_identity():
+    """The analyzer must refuse a dataset assembled from two experiments.
+
+    Each half of such a dataset passes every per-trace check on its own; only
+    comparing the manifest headers catches that they are different experiments.
+    """
+    import tempfile
+
+    modes = ["kisni-typing", "typing-only", "kisni-idle", "idle"]
+
+    def header(codes):
+        return {"type": "header", "schema": 1, "runner_version": "1.0.0",
+                "expected_hash": "a" * 64,
+                "kernel_release": "6.18.50+rpt-rpi-2712", "codes": codes,
+                "trigger": "gpio17", "gpio_pin": 17, "rate": 20.0,
+                "duration_s": 2.5, "injector": "uinput"}
+
+    def trace(mode, index):
+        delta = 160 if mode == "kisni-typing" else (0 if mode == "kisni-idle" else None)
+        return {"type": "trace", "trace_index": index, "mode": mode,
+                "status": "ok", "debugfs_delta": delta,
+                "debugfs_bytes_before": 0 if mode in ("kisni-typing", "kisni-idle")
+                else None,
+                "keystroke_file_sha256": "k" * 64, "keystroke_interval_ms": 50,
+                "window_ns": 2_500_000_000, "dry_run": False,
+                "module_required": mode.startswith("kisni"),
+                "module_sha256": "a" * 64,
+                "kernel_release": "6.18.50+rpt-rpi-2712", "notes": []}
+
+    failures = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, headers in (("clean", [header(1)]),
+                              ("mixed", [header(1), header(2)])):
+            path = os.path.join(tmp, name + ".jsonl")
+            with open(path, "w", encoding="utf-8") as fh:
+                for h in headers:
+                    fh.write(json.dumps(h) + "\n")
+                    for i, mode in enumerate(modes):
+                        fh.write(json.dumps(trace(mode, i)) + "\n")
+            proc = run([os.path.join(ROOT, "keysni_analyze.py"), path])
+            if name == "clean":
+                ok = proc.returncode == 0
+                label = "analyzer accepts a complete one-experiment dataset"
+            else:
+                ok = proc.returncode == 1 and "codes parameter" in proc.stdout
+                label = "analyzer refuses manifests from two experiments"
+            print(f"[{'PASS' if ok else 'FAIL'}] {label}")
+            if not ok:
+                failures.append(label)
+                print((proc.stdout + proc.stderr).strip()[-600:])
+    return failures
 
 
 def check_goodware_runner():

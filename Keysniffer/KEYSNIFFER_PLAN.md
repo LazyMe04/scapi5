@@ -299,6 +299,11 @@ the lab loaded it deliberately.
 
 Do this on a throwaway image state, with nothing valuable on the card.
 
+> **Status 2026-11-15: PASSED on hardware.** `smoke03` completed 96 consecutive
+> load/unload cycles (the gate below is 50) with a clean `lsmod` and no surviving
+> injector; the run used `kisni_runner.py`, so it also satisfies the Phase 7 gate.
+> Recorded in `analysis_notes/KEYSNIFFER_PROVENANCE.md` §6.
+
 ```bash
 sudo dmesg -C
 sudo insmod /home/emlab/work/modules/kisni-<ver>-<hash>.ko codes=1
@@ -348,10 +353,10 @@ Failure handling:
 
 ## Phase 6 — Synthetic keyboard: the activity source
 
-> **Status 2026-11-09.** `tools/keysynth.c` is written. It has **not been compiled or
-> run**: no C compiler exists on the authoring host, so it is reviewed statically and
-> built in Phase 3 on the Pi. The `keyboard` profile in `goodware_runner.py` is written
-> and tested against a stub injector. The Phase 6 gate below still requires the Pi.
+> **Status 2026-11-15: compiled and run on the Pi.** `keysynth` produced 50 keys per
+> 2.5 s trace, and every `smoke03` trace recorded a non-zero byte delta. That confirms
+> case A of the gate below; cases B and C (no module, and SSH-only typing) remain manual
+> checks and must still be run before a campaign.
 
 This is the methodological core. `kisni` logs **console (`VT`) keyboard events**, produced
 when an input device is bound to `kbd_handler` in `drivers/tty/vt/keyboard.c`. Consequences:
@@ -434,10 +439,11 @@ typing, it does not increment at all. Confirm all three.
 
 ## Phase 7 — Runner
 
-> **Status 2026-11-09.** `Keysniffer/kisni_runner.py` is written and tested: 43 logic
-> checks run through a fake machine, so the lifecycle is proven without root, without a
-> module, and without the Pi. The Phase 7 gate below (one real trace with a non-zero byte
-> delta and a clean `lsmod`) still requires the hardware.
+> **Status 2026-11-15: PASSED on hardware.** `Keysniffer/kisni_runner.py` has 55 logic
+> checks that run through a fake machine, and the gate below was met on the Pi 96 times
+> in `smoke03` (kernel 6.18.50+rpt-rpi-2712): a non-zero byte delta of 160 on every
+> trace, a clean `lsmod` and no leftover injector. See
+> `analysis_notes/KEYSNIFFER_PROVENANCE.md` §6.
 
 Kernel-resident code has no PID, so `bashlite_runner.py` cannot supervise it. Add
 `Keysniffer/kisni_runner.py` rather than bending the sample runner; keep the sample runner's
@@ -451,15 +457,18 @@ containment gate, trigger and manifest conventions.
 3  rmmod kisni (ignore "not loaded")
 4  insmod kisni codes=1                     ← outside the measurement window
 5  settle  1.0 s
-6  stat    byte count of /sys/kernel/debug/kisni/keys  → before
+6  read    length of /sys/kernel/debug/kisni/keys  → before
 7  trigger ON  (GPIO 17 active-high)
 8  spawn   keysynth for --duration (default 2.5 s)
 9  trigger OFF
-10 stat    byte count → after      (must be > before)
+10 read    length of the key log → after      (must be > before)
 11 rmmod kisni
 12 verify  no `kisni` in lsmod; no leftover keysynth; record dmesg tail
 13 append  one JSONL manifest record
 ```
+
+The size is the length of what `read(2)` returns, not `st_size`: debugfs inodes report
+`i_size = 0`, so `stat` reads 0 both before and after even when the module recorded data.
 
 Reloading per trace is deliberate: the debugfs buffer wraps at 16 KB and cannot be
 truncated from userspace, so a byte-count delta is only meaningful if each trace starts
@@ -543,6 +552,10 @@ trigger timestamp in the manifest.
 
 ## Phase 9 — Capture campaign
 
+> **Status 2026-11-15: not started.** No EM capture is recorded yet. One of the four
+> cells (`kisni-typing`) has been measured behaviourally in `smoke03`; the scope campaign
+> still needs the remaining three cells and the hardware trigger alignment.
+
 Per-cell volume, following the paper's 3 000 traces per binary:
 
 | Cell | Traces | Wall clock at ~3.2 s/trace | Disk at ~40 MB/trace (float64 .npy) |
@@ -574,11 +587,13 @@ every trace, no trace from an unloaded or unverified module.
 
 ## Phase 10 — Analysis and record keeping
 
-> **Status 2026-11-09.** `Keysniffer/keysni_analyze.py` is written and tested (15 checks).
+> **Status 2026-11-15.** `Keysniffer/keysni_analyze.py` is written and tested (26 checks).
 > It automates the "minimum analysis to show the class is real" below: per-cell byte
-> distribution, ablation completeness, and the comparability checks that make the
-> `typing-only` control meaningful. The STFT/NICV/classifier work still needs captured
-> traces.
+> distribution, ablation completeness, the comparability checks that make the
+> `typing-only` control meaningful, and dataset-identity checks that reject manifests
+> describing different artifacts or measurement conditions. On `smoke03` it reported no
+> behavioural problem and refused only for the three missing cells. The STFT/NICV/
+> classifier work still needs captured traces.
 
 Minimum analysis to show the class is real before any ML claim:
 
@@ -590,6 +605,9 @@ jq -r 'select(.mode=="kisni-typing") | .debugfs_bytes_after - .debugfs_bytes_bef
 
 - `kisni-typing` and `typing-only` must have the same keystroke count and the same window
   length, or the comparison is invalid
+- every manifest in the dataset must describe one experiment: same module hash, kernel,
+  `codes=` mode, trigger/GPIO pin, rate, duration and injector. The analyzer rejects a
+  dataset that mixes them, because both halves can otherwise be individually clean
 - spectrograms at STFT 8192/4096, NICV-selected bands, per the paper
 - run the type/family classifiers with and without the `typing-only` ablation and report both
   numbers — the gap between them is the honest measure of how much of the signal was the
